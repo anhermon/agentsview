@@ -103,7 +103,7 @@ func (t TargetSet) SplitFileScoped() (dirScoped, fileScoped TargetSet) {
 func (t TargetSet) DeltaAllowedRoots() []string {
 	roots := make([]string, 0, len(t.Dirs)+len(t.Files)+len(t.ExtraFiles))
 	for agent, dirs := range t.Dirs {
-		if agent == parser.AgentOmnigent {
+		if parser.RemoteSyncExcludedAgent(agent) {
 			continue
 		}
 		if _, fileScoped := t.Files[agent]; fileScoped {
@@ -112,7 +112,7 @@ func (t TargetSet) DeltaAllowedRoots() []string {
 		roots = append(roots, dirs...)
 	}
 	for agent, files := range t.Files {
-		if agent == parser.AgentOmnigent {
+		if parser.RemoteSyncExcludedAgent(agent) {
 			continue
 		}
 		if verbatimFileScopedAgent(agent) {

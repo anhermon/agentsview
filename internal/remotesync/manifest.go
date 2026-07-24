@@ -71,7 +71,7 @@ func BuildManifest(targets TargetSet) (Manifest, error) {
 		return nil
 	}
 	for agent, dirs := range targets.Dirs {
-		if agent == parser.AgentOmnigent {
+		if parser.RemoteSyncExcludedAgent(agent) {
 			continue
 		}
 		if _, fileScoped := targets.Files[agent]; fileScoped {
@@ -87,7 +87,7 @@ func BuildManifest(targets TargetSet) (Manifest, error) {
 		}
 	}
 	for agent, files := range targets.Files {
-		if agent == parser.AgentOmnigent {
+		if parser.RemoteSyncExcludedAgent(agent) {
 			continue
 		}
 		for _, path := range files {

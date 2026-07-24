@@ -88,6 +88,13 @@ type AgentDef struct {
 	// Expensive scheduling inputs default to unsupported.
 	PeriodicReconcile bool
 
+	// RemoteSyncExcluded keeps every path under the agent's roots out of
+	// remote sync artifacts: resolve scripts, manifests, archives, delta
+	// roots, and tar commands. Set for stores that co-locate transcripts
+	// with secrets or state that cannot be copied safely; each artifact
+	// seam checks it so exclusion fails closed.
+	RemoteSyncExcluded bool
+
 	// WatchRootsFunc resolves the directories to watch for live
 	// updates under a configured root, for agents whose watch
 	// targets depend on the on-disk layout rather than a static
@@ -375,6 +382,10 @@ var Registry = []AgentDef{
 		WatchSubdirs: []string{"workspaceStorage", "globalStorage"},
 		FileBased:    true,
 		Usage:        UsageCapabilities{NoPerMessageTokenData: true},
+		// Trae's modern layout stores sessions as encrypted state that a
+		// remote machine cannot read; shipping it would copy opaque
+		// encrypted blobs.
+		RemoteSyncExcluded: true,
 	},
 	{
 		Type:        AgentVSCopilot,
@@ -810,6 +821,11 @@ var Registry = []AgentDef{
 		IDPrefix:          "omnigent:",
 		FileBased:         true,
 		PeriodicReconcile: true,
+		// chat.db co-locates transcripts with authentication secrets, and
+		// copying or sanitizing the source database can retain deleted
+		// pages. Remote sync stays disabled until Omnigent has a fresh,
+		// allowlisted export schema.
+		RemoteSyncExcluded: true,
 	},
 }
 
@@ -832,6 +848,13 @@ func AgentByType(t AgentType) (AgentDef, bool) {
 		}
 	}
 	return AgentDef{}, false
+}
+
+// RemoteSyncExcludedAgent reports whether the agent's raw source tree must
+// stay out of every remote sync artifact. Unknown agents are not excluded.
+func RemoteSyncExcludedAgent(agent AgentType) bool {
+	def, ok := AgentByType(agent)
+	return ok && def.RemoteSyncExcluded
 }
 
 // AgentNameLacksPerMessageTokenData reports whether the named agent

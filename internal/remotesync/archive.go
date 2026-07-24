@@ -36,7 +36,7 @@ func WriteArchive(w io.Writer, targets TargetSet) error {
 		return writeArchivePath(tw, path)
 	}
 	for agent, dirs := range targets.Dirs {
-		if agent == parser.AgentOmnigent {
+		if parser.RemoteSyncExcludedAgent(agent) {
 			continue
 		}
 		if _, fileScoped := targets.Files[agent]; fileScoped {
@@ -49,7 +49,7 @@ func WriteArchive(w io.Writer, targets TargetSet) error {
 		}
 	}
 	for agent, files := range targets.Files {
-		if agent == parser.AgentOmnigent {
+		if parser.RemoteSyncExcludedAgent(agent) {
 			continue
 		}
 		if agent == parser.AgentWindsurf {

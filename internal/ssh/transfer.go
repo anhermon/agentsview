@@ -45,7 +45,7 @@ func buildTarCommand(
 		}
 	}
 	for agent, agentDirs := range dirs {
-		if agent == parser.AgentOmnigent {
+		if parser.RemoteSyncExcludedAgent(agent) {
 			continue
 		}
 		if _, fileScoped := files[agent]; fileScoped {
@@ -56,7 +56,7 @@ func buildTarCommand(
 		}
 	}
 	for agent, agentFiles := range files {
-		if agent == parser.AgentOmnigent {
+		if parser.RemoteSyncExcludedAgent(agent) {
 			continue
 		}
 		for _, f := range agentFiles {
