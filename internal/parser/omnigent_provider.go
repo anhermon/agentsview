@@ -321,6 +321,7 @@ func omnigentProviderCapabilities() Capabilities {
 		CapabilityUnsupported,
 	)
 	source.PersistentArchive = CapabilitySupported
+	source.IncrementalDiscoveryCursor = CapabilitySupported
 	return Capabilities{
 		Source: source,
 		Content: ContentCapabilities{
