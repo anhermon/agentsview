@@ -7,10 +7,11 @@ import (
 )
 
 const (
-	ProviderFeatureFingerprint   = "fingerprint"
-	ProviderFeatureParse         = "parse"
-	ProviderFeatureWatchRoots    = "watch roots"
-	ProviderFeatureActivityHints = "activity hints"
+	ProviderFeatureFingerprint          = "fingerprint"
+	ProviderFeatureParse                = "parse"
+	ProviderFeatureWatchRoots           = "watch roots"
+	ProviderFeatureActivityHints        = "activity hints"
+	ProviderFeatureChangedPathRelevance = "changed path relevance"
 )
 
 // ErrUnsupportedProviderFeature identifies optional provider behavior that is
@@ -386,6 +387,42 @@ func ResolveActivityHintProvider(
 		}
 	}
 	return hints, true, nil
+}
+
+// ChangedPathRelevance distinguishes paths that are known to carry no source
+// data from paths that should keep the watch-triggered push active.
+type ChangedPathRelevance uint8
+
+const (
+	ChangedPathUnclassified ChangedPathRelevance = iota
+	ChangedPathNonData
+	ChangedPathDataBearing
+)
+
+// ChangedPathRelevanceProvider owns the bounded, engine-free path decision
+// needed by watch-trigger adapters.
+type ChangedPathRelevanceProvider interface {
+	ChangedPathRelevance(context.Context, ChangedPathRequest) (ChangedPathRelevance, error)
+}
+
+// ResolveChangedPathRelevance returns the optional path-relevance contract
+// only when the provider explicitly advertises it.
+func ResolveChangedPathRelevance(
+	ctx context.Context,
+	provider Provider,
+	req ChangedPathRequest,
+) (ChangedPathRelevance, error) {
+	if provider.Capabilities().Source.ChangedPathRelevance != CapabilitySupported {
+		return ChangedPathUnclassified, nil
+	}
+	relevance, ok := provider.(ChangedPathRelevanceProvider)
+	if !ok {
+		return ChangedPathUnclassified, UnsupportedProviderFeatureError{
+			Provider: provider.Definition().Type,
+			Feature:  ProviderFeatureChangedPathRelevance,
+		}
+	}
+	return relevance.ChangedPathRelevance(ctx, req)
 }
 
 // ChangedPathRequest is passed back to providers for authoritative changed-path

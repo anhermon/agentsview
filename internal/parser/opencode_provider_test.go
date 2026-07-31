@@ -622,6 +622,80 @@ func TestOpenCodeProviderIgnoresNonDataSQLiteSidecars(t *testing.T) {
 	}
 }
 
+func TestOpenCodeFormatWatchPathRelevance(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent AgentType
+		db    string
+	}{
+		{name: "OpenCode", agent: AgentOpenCode, db: "opencode.db"},
+		{name: "Kilo", agent: AgentKilo, db: "kilo.db"},
+		{name: "MiMoCode", agent: AgentMiMoCode, db: "mimocode.db"},
+		{name: "Icodemate", agent: AgentIcodemate, db: "icodemate.db"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			provider, ok := NewProvider(tc.agent, ProviderConfig{Roots: []string{root}})
+			require.True(t, ok)
+
+			check := func(path string) ChangedPathRelevance {
+				relevance, err := ResolveChangedPathRelevance(
+					t.Context(), provider, ChangedPathRequest{
+						Path: path, WatchRoot: root,
+					},
+				)
+				require.NoError(t, err)
+				return relevance
+			}
+
+			assert.Equal(t, ChangedPathNonData,
+				check(filepath.Join(root, tc.db+"-shm")))
+			assert.Equal(t, ChangedPathNonData,
+				check(filepath.Join(root, tc.db+"-wal")),
+				"missing WAL is non-data")
+			walPath := filepath.Join(root, tc.db+"-wal")
+			require.NoError(t, os.WriteFile(walPath, make([]byte, 32), 0o600))
+			assert.Equal(t, ChangedPathNonData, check(walPath),
+				"32-byte WAL header has no transaction frame")
+			require.NoError(t, os.WriteFile(walPath, make([]byte, 33), 0o600))
+			assert.Equal(t, ChangedPathDataBearing, check(walPath),
+				"WAL data begins after the 32-byte header")
+			assert.Equal(t, ChangedPathDataBearing,
+				check(filepath.Join(root, tc.db)),
+				"the main database remains push-worthy even when absent")
+			assert.Equal(t, ChangedPathUnclassified,
+				check(filepath.Join(root, tc.db+"-backup")))
+			assert.Equal(t, ChangedPathUnclassified,
+				check(filepath.Join(t.TempDir(), tc.db+"-shm")),
+				"the same basename outside the configured root is unclaimed")
+		})
+	}
+}
+
+func TestOpenCodeFormatWatchPathRelevanceFailsOpen(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory-permission stat failures are not portable to this runner")
+	}
+	root := t.TempDir()
+	walDir := filepath.Join(root, "locked")
+	require.NoError(t, os.Mkdir(walDir, 0o700))
+	walPath := filepath.Join(walDir, "opencode.db-wal")
+	require.NoError(t, os.WriteFile(walPath, make([]byte, 64), 0o600))
+	require.NoError(t, os.Chmod(walDir, 0o000))
+	t.Cleanup(func() { require.NoError(t, os.Chmod(walDir, 0o700)) })
+
+	provider, ok := NewProvider(AgentOpenCode, ProviderConfig{Roots: []string{walDir}})
+	require.True(t, ok)
+	relevance, err := ResolveChangedPathRelevance(
+		t.Context(), provider, ChangedPathRequest{Path: walPath, WatchRoot: walDir},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, ChangedPathDataBearing, relevance,
+		"unexpected WAL stat failures must retain the push")
+}
+
 func TestSQLiteWALHasFramesFailsOpenOnStatError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory-permission stat failures are not portable to Windows")

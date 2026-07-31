@@ -98,6 +98,13 @@ func (p *openCodeFormatProvider) SourcesForChangedPath(
 	return p.sources.SourcesForChangedPath(ctx, req)
 }
 
+func (p *openCodeFormatProvider) ChangedPathRelevance(
+	ctx context.Context,
+	req ChangedPathRequest,
+) (ChangedPathRelevance, error) {
+	return p.sources.ChangedPathRelevance(ctx, req)
+}
+
 func (p *openCodeFormatProvider) SourceForReconciliation(
 	ctx context.Context, path, project string,
 ) (SourceRef, bool, error) {
@@ -854,24 +861,9 @@ func (s openCodeFormatSourceSet) sourcesForChangedPathInRoot(
 	if !ok {
 		return nil, false, nil
 	}
-	isSQLiteChange := true
-	switch rel {
-	case s.spec.dbName + "-shm":
-		// SHM is only SQLite's WAL index. WAL frames (or the checkpointed main
-		// database) carry the source changes, so SHM events are redundant.
+	relevance, isSQLiteChange := s.sqliteChangeRelevance(root, path, rel)
+	if isSQLiteChange && relevance == ChangedPathNonData {
 		return nil, true, nil
-	case s.spec.dbName + "-wal":
-		// A read-only connection can create an empty WAL while inspecting a
-		// quiet database. Ignore it, as well as WAL removal after a checkpoint;
-		// the corresponding main-database write is watched separately.
-		if !sqliteWALHasFrames(path) {
-			return nil, true, nil
-		}
-	case s.spec.dbName:
-		// The main database and WALs with transaction frames both fan out to
-		// the logical sessions stored in this shared SQLite container.
-	default:
-		isSQLiteChange = false
 	}
 
 	if isSQLiteChange {
@@ -966,6 +958,73 @@ func (s openCodeFormatSourceSet) sourcesForChangedPathInRoot(
 		return []SourceRef{source}, true, nil
 	}
 	return nil, false, nil
+}
+
+func (s openCodeFormatSourceSet) ChangedPathRelevance(
+	ctx context.Context,
+	req ChangedPathRequest,
+) (ChangedPathRelevance, error) {
+	if err := ctx.Err(); err != nil {
+		return ChangedPathUnclassified, err
+	}
+	if req.WatchRoot != "" {
+		root := filepath.Clean(req.WatchRoot)
+		if !s.hasConfiguredRoot(root) {
+			return ChangedPathUnclassified, nil
+		}
+		return s.changedPathRelevanceInRoot(root, req.Path), nil
+	}
+	for _, root := range s.roots {
+		if relevance := s.changedPathRelevanceInRoot(root, req.Path); relevance != ChangedPathUnclassified {
+			return relevance, nil
+		}
+	}
+	return ChangedPathUnclassified, nil
+}
+
+func (s openCodeFormatSourceSet) changedPathRelevanceInRoot(
+	root, path string,
+) ChangedPathRelevance {
+	rel, ok := relUnder(root, path)
+	if !ok {
+		return ChangedPathUnclassified
+	}
+	relevance, _ := s.sqliteChangeRelevance(root, path, rel)
+	return relevance
+}
+
+func (s openCodeFormatSourceSet) sqliteChangeRelevance(
+	root, path, rel string,
+) (ChangedPathRelevance, bool) {
+	switch rel {
+	case s.spec.dbName + "-shm":
+		// SHM is only SQLite's WAL index. WAL frames or the checkpointed main
+		// database carry the source changes, so SHM events are redundant.
+		return ChangedPathNonData, true
+	case s.spec.dbName + "-wal":
+		// A read-only connection can create an empty WAL while inspecting a
+		// quiet database. Ignore it, as well as WAL removal after a checkpoint;
+		// the corresponding main-database write is watched separately.
+		if !sqliteWALHasFrames(path) {
+			return ChangedPathNonData, true
+		}
+		return ChangedPathDataBearing, true
+	case s.spec.dbName:
+		// A missing main database is still a data-bearing change. It can mean
+		// the container moved or was removed, so the watch push must remain.
+		return ChangedPathDataBearing, true
+	default:
+		return ChangedPathUnclassified, false
+	}
+}
+
+func (s openCodeFormatSourceSet) hasConfiguredRoot(root string) bool {
+	for _, configured := range s.roots {
+		if samePath(root, configured) {
+			return true
+		}
+	}
+	return false
 }
 
 func sqliteWALHasFrames(path string) bool {
@@ -1108,6 +1167,7 @@ func openCodeFormatProviderCapabilities() Capabilities {
 			StreamingDiscovery:    CapabilitySupported,
 			WatchSources:          CapabilitySupported,
 			ClassifyChangedPath:   CapabilitySupported,
+			ChangedPathRelevance:  CapabilitySupported,
 			FindSource:            CapabilitySupported,
 			CompositeFingerprint:  CapabilitySupported,
 			IncrementalAppend:     CapabilityNotApplicable,
