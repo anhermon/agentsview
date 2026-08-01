@@ -832,6 +832,26 @@ func TestDaemonPGPushWatchSuppressesRepeatedOpenCodeSHMOnlyBatches(t *testing.T)
 	t.Log("reason_change_attempts=0 path=opencode.db-shm")
 }
 
+func TestDaemonPGPushWatchRelevancePreservesExplicitCurrentDirectoryRoot(t *testing.T) {
+	cfg := config.Config{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentOpenCode: {"."},
+		},
+	}
+	loop, _, _ := newTestLoop(func(context.Context, pushReason) error {
+		t.Fatal("explicit current-directory roots must suppress SHM-only batches")
+		return nil
+	})
+	require.NoError(t, notifyPushForWatchBatchWithConfig(
+		t.Context(), loop, cfg, syncpkg.WatchBatch{
+			Paths: []string{filepath.Join(".", "opencode.db-shm")},
+		},
+	))
+	assert.False(t, loop.pending,
+		"an explicit current-directory root must retain relevance coverage")
+	t.Log("reason_change_attempts=0 root=. path=opencode.db-shm")
+}
+
 func TestDaemonPushWatchOwnersSuppressOpenCodeSHMOnlyBatches(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Config{

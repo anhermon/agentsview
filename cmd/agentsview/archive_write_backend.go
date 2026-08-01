@@ -319,10 +319,10 @@ func configuredWatchPathRelevanceProviders(
 		}
 		roots := cfg.ResolveDirs(factory.Definition().Type)
 		for _, root := range roots {
-			root = filepath.Clean(root)
-			if root == "." || root == "" {
+			if root == "" {
 				continue
 			}
+			root = filepath.Clean(root)
 			providers = append(providers, watchPathRelevanceProvider{
 				provider: factory.NewProvider(parser.ProviderConfig{
 					Roots: []string{root},
