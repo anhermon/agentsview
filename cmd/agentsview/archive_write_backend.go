@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	stdsync "sync"
 	"time"
 
@@ -184,6 +183,7 @@ func archivePushWatchBatchCallback(
 	engine watchSyncer,
 	loop *pushLoop,
 ) syncpkg.WatchCallback {
+	notify := newWatchBatchPushNotifier(loop, appCfg)
 	return func(callbackCtx context.Context, batch syncpkg.WatchBatch) error {
 		scope := func() watchRecoveryScope {
 			return probeWatchRecoveryScope(appCfg)
@@ -191,9 +191,7 @@ func archivePushWatchBatchCallback(
 		if err := syncWatchBatch(callbackCtx, engine, batch, scope); err != nil {
 			return err
 		}
-		return notifyPushForWatchBatchWithConfig(
-			callbackCtx, loop, appCfg, batch,
-		)
+		return notify(callbackCtx, batch)
 	}
 }
 
@@ -253,16 +251,20 @@ func notifyPushForWatchBatch(
 	}
 }
 
-func notifyPushForWatchBatchWithConfig(
-	ctx context.Context,
-	loop *pushLoop,
-	cfg config.Config,
-	batch syncpkg.WatchBatch,
-) error {
-	if watchBatchIsAffirmativelyNonData(ctx, cfg, batch) {
-		return nil
+// newWatchBatchPushNotifier returns the push-notification step shared by the
+// watch callbacks. The relevance providers depend only on the configuration,
+// which is fixed for the watcher's lifetime, so they are resolved once here
+// instead of on every batch.
+func newWatchBatchPushNotifier(
+	loop *pushLoop, cfg config.Config,
+) syncpkg.WatchCallback {
+	providers := configuredWatchPathRelevanceProviders(cfg)
+	return func(ctx context.Context, batch syncpkg.WatchBatch) error {
+		if watchBatchIsAffirmativelyNonData(ctx, providers, batch) {
+			return nil
+		}
+		return notifyPushForWatchBatch(ctx, loop, batch)
 	}
-	return notifyPushForWatchBatch(ctx, loop, batch)
 }
 
 type watchPathRelevanceProvider struct {
@@ -270,9 +272,16 @@ type watchPathRelevanceProvider struct {
 	root     string
 }
 
+// watchBatchIsAffirmativelyNonData reports whether every path in the batch is
+// classified as carrying no source data by the provider that owns it. In
+// daemon-delegated mode this process's classification stands in for the
+// daemon's: if the two binaries ever disagree, a data-bearing change waits
+// for the interval push instead of the watch push. The rules therefore stay
+// narrow — only affirmative non-data classifications suppress, and every
+// ambiguity, error, or authoritative batch retains the notification.
 func watchBatchIsAffirmativelyNonData(
 	ctx context.Context,
-	cfg config.Config,
+	providers []watchPathRelevanceProvider,
 	batch syncpkg.WatchBatch,
 ) bool {
 	if ctx.Err() != nil || len(batch.Paths) == 0 || batch.FullSync ||
@@ -281,14 +290,13 @@ func watchBatchIsAffirmativelyNonData(
 		return false
 	}
 
-	providers := configuredWatchPathRelevanceProviders(cfg)
 	if len(providers) == 0 {
 		return false
 	}
 	for _, path := range batch.Paths {
 		matched := false
 		for _, candidate := range providers {
-			if !watchPathUnderRoot(candidate.root, path) {
+			if !parser.PathUnderRoot(candidate.root, path) {
 				continue
 			}
 			matched = true
@@ -332,14 +340,6 @@ func configuredWatchPathRelevanceProviders(
 		}
 	}
 	return providers
-}
-
-func watchPathUnderRoot(root, path string) bool {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) {
-		return false
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func watchBatchNeedsPushAck(batch syncpkg.WatchBatch) bool {
@@ -563,11 +563,7 @@ func (b daemonArchiveWriteBackend) DuckDBPushWatch(
 
 	stopWatcher, openDispatch, unwatchedDirs := startArchivePushWatcher(
 		b.watchHooks, b.appCfg, nil,
-		func(callbackCtx context.Context, batch syncpkg.WatchBatch) error {
-			return notifyPushForWatchBatchWithConfig(
-				callbackCtx, loop, b.appCfg, batch,
-			)
-		},
+		newWatchBatchPushNotifier(loop, b.appCfg),
 		syncpkg.WatcherOptions{OnCoverageDegraded: loop.NotifyCoverageDegraded},
 	)
 	defer stopWatcher()
@@ -695,11 +691,7 @@ func (b daemonArchiveWriteBackend) PGPushWatch(
 
 	stopWatcher, openDispatch, unwatchedDirs := startArchivePushWatcher(
 		b.watchHooks, b.appCfg, nil,
-		func(callbackCtx context.Context, batch syncpkg.WatchBatch) error {
-			return notifyPushForWatchBatchWithConfig(
-				callbackCtx, loop, b.appCfg, batch,
-			)
-		},
+		newWatchBatchPushNotifier(loop, b.appCfg),
 		syncpkg.WatcherOptions{OnCoverageDegraded: loop.NotifyCoverageDegraded},
 	)
 	defer stopWatcher()

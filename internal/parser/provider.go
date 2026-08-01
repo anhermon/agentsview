@@ -425,6 +425,15 @@ func ResolveChangedPathRelevance(
 	return relevance.ChangedPathRelevance(ctx, req)
 }
 
+// PathUnderRoot reports whether path is strictly contained within root, using
+// the same containment rule providers apply when classifying changed paths.
+// Watch-trigger adapters use it to route a path to the provider whose root
+// owns it before asking for its relevance.
+func PathUnderRoot(root, path string) bool {
+	_, ok := relUnder(root, path)
+	return ok
+}
+
 // ChangedPathRequest is passed back to providers for authoritative changed-path
 // classification.
 type ChangedPathRequest struct {

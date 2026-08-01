@@ -760,16 +760,6 @@ func indexOfEvent(events []string, want string) int {
 	return -1
 }
 
-func countEvents(events []string, want string) int {
-	total := 0
-	for _, event := range events {
-		if event == want {
-			total++
-		}
-	}
-	return total
-}
-
 func receiveArchiveTest[T any](t *testing.T, ch <-chan T) T {
 	t.Helper()
 	select {
@@ -816,10 +806,9 @@ func TestDaemonPGPushWatchSuppressesRepeatedOpenCodeSHMOnlyBatches(t *testing.T)
 	batch := syncpkg.WatchBatch{
 		Paths: []string{filepath.Join(root, "opencode.db-shm")},
 	}
+	notify := newWatchBatchPushNotifier(loop, cfg)
 	for range 3 {
-		require.NoError(t,
-			notifyPushForWatchBatchWithConfig(ctx, loop, cfg, batch),
-		)
+		require.NoError(t, notify(ctx, batch))
 		select {
 		case reason := <-pushes:
 			require.Failf(t, "SHM-only batches must not schedule a push",
@@ -829,7 +818,6 @@ func TestDaemonPGPushWatchSuppressesRepeatedOpenCodeSHMOnlyBatches(t *testing.T)
 	}
 	assert.False(t, loop.pending,
 		"repeated opencode.db-shm batches must not mark the push loop dirty")
-	t.Log("reason_change_attempts=0 path=opencode.db-shm")
 }
 
 func TestDaemonPGPushWatchRelevancePreservesExplicitCurrentDirectoryRoot(t *testing.T) {
@@ -842,14 +830,13 @@ func TestDaemonPGPushWatchRelevancePreservesExplicitCurrentDirectoryRoot(t *test
 		t.Fatal("explicit current-directory roots must suppress SHM-only batches")
 		return nil
 	})
-	require.NoError(t, notifyPushForWatchBatchWithConfig(
-		t.Context(), loop, cfg, syncpkg.WatchBatch{
+	require.NoError(t, newWatchBatchPushNotifier(loop, cfg)(
+		t.Context(), syncpkg.WatchBatch{
 			Paths: []string{filepath.Join(".", "opencode.db-shm")},
 		},
 	))
 	assert.False(t, loop.pending,
 		"an explicit current-directory root must retain relevance coverage")
-	t.Log("reason_change_attempts=0 root=. path=opencode.db-shm")
 }
 
 func TestDaemonPushWatchOwnersSuppressOpenCodeSHMOnlyBatches(t *testing.T) {
@@ -910,9 +897,6 @@ func TestDaemonPushWatchOwnersSuppressOpenCodeSHMOnlyBatches(t *testing.T) {
 				"repeated opencode.db-shm batches must not mark the push loop dirty")
 			assert.Zero(t, waiters,
 				"suppressed batches must not register an acknowledgement waiter")
-			events, _, _, _ := h.snapshot()
-			t.Logf("owner=%s path=opencode.db-shm push_pending=%t waiters=%d pushes=%d",
-				owner.name, pending, waiters, countEvents(events, "push"))
 
 			cancel()
 			require.NoError(t, receiveArchiveTest(t, done))
@@ -953,12 +937,11 @@ func TestDaemonPGPushWatchSuppressesNonDataOpenCodeWALBatches(t *testing.T) {
 				t.Fatal("non-data WAL batches must not schedule a push")
 				return nil
 			})
-			require.NoError(t, notifyPushForWatchBatchWithConfig(
-				t.Context(), loop, cfg, syncpkg.WatchBatch{Paths: []string{walPath}},
+			require.NoError(t, newWatchBatchPushNotifier(loop, cfg)(
+				t.Context(), syncpkg.WatchBatch{Paths: []string{walPath}},
 			))
 			assert.False(t, loop.pending,
 				"non-data WAL batches must not mark the push loop dirty")
-			t.Logf("reason_change_attempts=0 wal=%s", tc.name)
 		})
 	}
 }
@@ -1001,12 +984,11 @@ func TestDaemonPGPushWatchRetainsDataBearingMixedBatches(t *testing.T) {
 			loop, _, _ := newTestLoop(func(context.Context, pushReason) error {
 				return nil
 			})
-			require.NoError(t, notifyPushForWatchBatchWithConfig(
-				t.Context(), loop, cfg, syncpkg.WatchBatch{Paths: tc.paths},
+			require.NoError(t, newWatchBatchPushNotifier(loop, cfg)(
+				t.Context(), syncpkg.WatchBatch{Paths: tc.paths},
 			))
 			assert.True(t, loop.pending,
 				"data-bearing or unclassified paths must retain notification")
-			t.Logf("notification_retained=%s paths=%d", tc.name, len(tc.paths))
 		})
 	}
 }
@@ -1022,14 +1004,13 @@ func TestDaemonPGPushWatchRetainsAmbiguousOverlappingRootBatch(t *testing.T) {
 	loop, _, _ := newTestLoop(func(context.Context, pushReason) error {
 		return nil
 	})
-	require.NoError(t, notifyPushForWatchBatchWithConfig(
-		t.Context(), loop, cfg, syncpkg.WatchBatch{
+	require.NoError(t, newWatchBatchPushNotifier(loop, cfg)(
+		t.Context(), syncpkg.WatchBatch{
 			Paths: []string{filepath.Join(root, "opencode.db-shm")},
 		},
 	))
 	assert.True(t, loop.pending,
 		"ambiguous provider ownership must retain the notification")
-	t.Log("notification_retained=ambiguous overlap paths=1")
 }
 
 func TestDaemonPGPushWatchRelevanceDoesNotEnumerateSessions(t *testing.T) {
@@ -1054,8 +1035,8 @@ func TestDaemonPGPushWatchRelevanceDoesNotEnumerateSessions(t *testing.T) {
 				t.Fatal("bounded SHM classification must suppress the push")
 				return nil
 			})
-			err = notifyPushForWatchBatchWithConfig(
-				t.Context(), loop, cfg, syncpkg.WatchBatch{
+			err = newWatchBatchPushNotifier(loop, cfg)(
+				t.Context(), syncpkg.WatchBatch{
 					Paths: []string{filepath.Join(root, "opencode.db-shm")},
 				},
 			)
@@ -1114,25 +1095,23 @@ func TestPushWatchRelevancePreservesAuthoritativeBatches(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			go loop.Run(ctx)
+			notify := newWatchBatchPushNotifier(loop, cfg)
 			if tc.waitForPush {
 				done := make(chan error, 1)
 				go func() {
-					done <- notifyPushForWatchBatchWithConfig(ctx, loop, cfg, tc.batch)
+					done <- notify(ctx, tc.batch)
 				}()
 				fire <- time.Now()
 				require.NoError(t, <-done)
 				assert.Equal(t, reasonChange, <-pushed)
 			} else {
-				require.NoError(t,
-					notifyPushForWatchBatchWithConfig(t.Context(), loop, cfg, tc.batch),
-				)
+				require.NoError(t, notify(t.Context(), tc.batch))
 			}
 			if tc.waitForPush {
 				assert.False(t, loop.pending)
 			} else {
 				assert.True(t, loop.pending)
 			}
-			t.Logf("authoritative=%s notification_retained=true", tc.name)
 		})
 	}
 }
@@ -1155,7 +1134,6 @@ func TestArchivePushWatchCallbackPassesUnfilteredBatchToSync(t *testing.T) {
 	assert.Equal(t, [][]string{{path}}, recorder.pathCalls)
 	assert.Equal(t, []string{"paths"}, recorder.callOrder)
 	assert.False(t, loop.pending)
-	t.Log("engine_sync=completed push_pending=false")
 }
 
 func TestResolveArchiveWriteBackendCopiesNoSyncRuntime(t *testing.T) {
