@@ -618,7 +618,8 @@ type Engine struct {
 // engine-scoped because some provider paths do not retain the discovered
 // file's ForceParse bit through their full processing pipeline.
 func (e *Engine) forceParseRequested(file parser.DiscoveredFile) bool {
-	return e.forceParse || e.forceFullParse || file.ForceParse
+	return e.forceParse || e.forceFullParse || file.ForceParse ||
+		file.ForceFullParse
 }
 
 // ReconciliationResult is the structured acknowledgement for the most recent
@@ -1639,6 +1640,7 @@ func mergeChangedPathDiscoveredFile(
 	next parser.DiscoveredFile,
 ) parser.DiscoveredFile {
 	current.ForceParse = current.ForceParse || next.ForceParse
+	current.ForceFullParse = current.ForceFullParse || next.ForceFullParse
 	current.ProviderProcess = current.ProviderProcess || next.ProviderProcess
 	if current.Project == "" {
 		current.Project = next.Project
@@ -10014,7 +10016,7 @@ func (e *Engine) processProviderFile(
 	// bypassing incremental append. Otherwise a complete parse can still be
 	// written with append semantics and leave stale earlier rows untouched.
 	incForceReplace := sourceForceReplace || incRes.forceReplace ||
-		e.forceFullParse
+		e.forceFullParse || file.ForceFullParse
 
 	// DB-stored fingerprint skip. The provider has no database handle, so the
 	// engine reproduces the legacy DB-aware skip that single-session JSONL
@@ -11844,7 +11846,7 @@ func (e *Engine) providerSingleSessionFresh(
 	// cache) must not defeat the DB-freshness skip: an unchanged session
 	// is still skipped so a single-session resync does not, for example,
 	// reapply a worktree project mapping to a file that has not changed.
-	if e.forceParse || e.forceFullParse {
+	if e.forceParse || e.forceFullParse || file.ForceFullParse {
 		return 0, false, false, false
 	}
 	// Claude is the single-physical-file provider that takes the
@@ -12393,7 +12395,7 @@ func (e *Engine) tryProviderIncrementalAppend(
 	// A per-file ForceParse keeps Claude on its incremental path; Codex is the
 	// explicit exception below because a single-session refresh must rebuild
 	// head-derived metadata.
-	if e.forceParse || e.forceFullParse {
+	if e.forceParse || e.forceFullParse || file.ForceFullParse {
 		return processResult{}, false
 	}
 	if provider.Capabilities().Source.IncrementalAppend !=
@@ -12508,7 +12510,7 @@ func (e *Engine) tryIncrementalJSONL(
 	agent parser.AgentType,
 	parseFn incrementalParseFunc,
 ) (processResult, bool) {
-	if e.forceParse || e.forceFullParse {
+	if e.forceParse || e.forceFullParse || file.ForceFullParse {
 		// Parse-diff and explicit full imports never produce append deltas.
 		return processResult{}, false
 	}

@@ -1030,9 +1030,7 @@ func (r *mirrorTestRemote) addWindsurfFileScopedAgent(t *testing.T) string {
 // Message timestamps are deterministic, so writing the same file again
 // with the previous texts plus new ones is a byte-identical prefix
 // append — the realistic mutation for JSONL session files, and one the
-// engine's incremental parse handles. (In-place rewrites that grow are
-// misread as appends for remote paths — pre-existing engine gap, out
-// of scope here.)
+// engine's incremental parse handles.
 func (r *mirrorTestRemote) writeSession(
 	t *testing.T, name string, mtime time.Time, userTexts ...string,
 ) string {
@@ -3800,6 +3798,43 @@ func TestPrepareHTTPSyncSameMtimeSizeChangeRecoversAfterAbortedRebuild(t *testin
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
 	assert.Equal(t, "new", messages[0].Content)
+}
+
+func TestHTTPMirrorSameMtimeGrowingRewriteFullParses(t *testing.T) {
+	remote := newMirrorTestRemote(t)
+	mtime := time.Date(2026, 7, 11, 14, 0, 0, 0, time.UTC)
+	path := remote.writeSession(t, "growing-rewrite.jsonl", mtime, "old")
+	dataDir := t.TempDir()
+	database, hs := newMirrorSync(t, remote, dataDir)
+
+	first, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, first.SessionsSynced)
+	before, err := os.Stat(path)
+	require.NoError(t, err)
+
+	remote.writeSession(
+		t, "growing-rewrite.jsonl", mtime,
+		"replacement with a deliberately larger body",
+	)
+	after, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Greater(t, after.Size(), before.Size())
+	require.Equal(t, before.ModTime(), after.ModTime())
+
+	second, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, second.SessionsSynced)
+	assert.Zero(t, second.Skipped)
+	messages, err := database.GetMessages(
+		t.Context(), "devbox~growing-rewrite", 0, 10, true,
+	)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t,
+		"replacement with a deliberately larger body",
+		messages[0].Content,
+	)
 }
 
 func tarWithoutEndMarker(t *testing.T, name, body string) []byte {

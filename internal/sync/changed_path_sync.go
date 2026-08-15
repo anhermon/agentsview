@@ -22,11 +22,33 @@ type ChangedPathSyncResult struct {
 	CachedFallbackProviders map[parser.AgentType]int `json:"-"`
 }
 
+// ChangedPathSyncOptions controls execution-only behavior for a planned
+// changed-path import. ForceFullParse is the armed journal projection: its
+// exact sources and fallback providers bypass freshness and incremental append
+// for this attempt only.
+type ChangedPathSyncOptions struct {
+	ForceFullParse ChangedPathPruneScope
+}
+
 // SyncChangedPathPlanContext processes exact sources and explicitly selected
 // provider fallbacks without granting deletion authority over missing sources.
 func (e *Engine) SyncChangedPathPlanContext(
 	ctx context.Context,
 	plan ChangedPathPlan,
+	onProgress ProgressFunc,
+) (ChangedPathSyncResult, error) {
+	return e.SyncChangedPathPlanWithOptionsContext(
+		ctx, plan, ChangedPathSyncOptions{}, onProgress,
+	)
+}
+
+// SyncChangedPathPlanWithOptionsContext processes a plan with explicit
+// execution scope. Keeping the armed scope separate from the import plan lets
+// disarmed journal entries remain importable without re-forcing poison paths.
+func (e *Engine) SyncChangedPathPlanWithOptionsContext(
+	ctx context.Context,
+	plan ChangedPathPlan,
+	options ChangedPathSyncOptions,
 	onProgress ProgressFunc,
 ) (ChangedPathSyncResult, error) {
 	result := ChangedPathSyncResult{
@@ -43,6 +65,28 @@ func (e *Engine) SyncChangedPathPlanContext(
 	if err != nil {
 		return result, err
 	}
+	forceSourceKeys := make(map[string]struct{}, len(options.ForceFullParse.Files))
+	for _, file := range options.ForceFullParse.Files {
+		forceSourceKeys[changedPathSourceKey(file)] = struct{}{}
+	}
+	forceProviders := make(map[parser.AgentType]struct{},
+		len(options.ForceFullParse.FallbackProviders))
+	for _, agent := range options.ForceFullParse.FallbackProviders {
+		forceProviders[agent] = struct{}{}
+	}
+	planFiles := append([]parser.DiscoveredFile(nil), plan.Files...)
+	for i := range planFiles {
+		if _, force := forceSourceKeys[changedPathSourceKey(planFiles[i])]; force {
+			planFiles[i].ForceParse = true
+			planFiles[i].ForceFullParse = true
+		}
+	}
+	for i := range fallbackFiles {
+		if _, force := forceProviders[fallbackFiles[i].Agent]; force {
+			fallbackFiles[i].ForceParse = true
+			fallbackFiles[i].ForceFullParse = true
+		}
+	}
 	for _, count := range fallbackCounts {
 		result.FallbackSources += count
 	}
@@ -58,7 +102,7 @@ func (e *Engine) SyncChangedPathPlanContext(
 		}
 	}
 	files := sortAndDedupeChangedPathFiles(append(
-		append([]parser.DiscoveredFile(nil), plan.Files...), fallbackFiles...,
+		planFiles, fallbackFiles...,
 	))
 	result.FilesDiscovered = len(files)
 	if len(files) == 0 {

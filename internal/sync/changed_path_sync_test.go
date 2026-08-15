@@ -79,6 +79,83 @@ func TestSyncChangedPathPlanReportsOnlyMtimeCacheSuppression(t *testing.T) {
 	assert.NotContains(t, provider.calls, "parse")
 }
 
+func TestSyncChangedPathPlanArmedScopeForcesOneFullParse(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		plan     func(parser.DiscoveredFile) ChangedPathPlan
+		options  func(parser.DiscoveredFile) ChangedPathSyncOptions
+		fallback bool
+	}{
+		{
+			name: "exact source",
+			plan: func(file parser.DiscoveredFile) ChangedPathPlan {
+				return ChangedPathPlan{Files: []parser.DiscoveredFile{file}}
+			},
+			options: func(file parser.DiscoveredFile) ChangedPathSyncOptions {
+				return ChangedPathSyncOptions{ForceFullParse: ChangedPathPruneScope{
+					Files: []parser.DiscoveredFile{file},
+				}}
+			},
+		},
+		{
+			name: "fallback provider",
+			plan: func(parser.DiscoveredFile) ChangedPathPlan {
+				return ChangedPathPlan{FallbackProviders: []parser.AgentType{
+					parser.AgentCowork,
+				}}
+			},
+			options: func(parser.DiscoveredFile) ChangedPathSyncOptions {
+				return ChangedPathSyncOptions{ForceFullParse: ChangedPathPruneScope{
+					FallbackProviders: []parser.AgentType{parser.AgentCowork},
+				}}
+			},
+			fallback: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := dbtest.OpenTestDB(t)
+			root := t.TempDir()
+			path, fingerprint := writeProcessProviderSource(t, root, "armed.jsonl")
+			source := processFixtureSource(path)
+			provider := newProcessFixtureProvider(
+				source, fingerprint, parser.ParseOutcome{ResultSetComplete: true},
+			)
+			provider.Caps.Sync.SkipCacheFreshWithoutStoredRow = true
+			if tc.fallback {
+				provider.discovered = []parser.SourceRef{source}
+			}
+			engine := NewEngine(database, EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{
+					parser.AgentCowork: {root},
+				},
+				Machine: "remote", Ephemeral: true,
+				ProviderFactories: []parser.ProviderFactory{
+					processFixtureFactory{provider: provider},
+				},
+				ProviderMigrationModes: map[parser.AgentType]parser.ProviderMigrationMode{
+					parser.AgentCowork: parser.ProviderMigrationProviderAuthoritative,
+				},
+			})
+			t.Cleanup(engine.Close)
+			engine.skipCache[providerAgentSkipCacheKey(path, parser.AgentCowork)] =
+				fingerprint.MTimeNS
+			file := parser.DiscoveredFile{
+				Path: path, Agent: parser.AgentCowork,
+				ProviderSource: &source, ProviderProcess: true,
+			}
+
+			result, err := engine.SyncChangedPathPlanWithOptionsContext(
+				t.Context(), tc.plan(file), tc.options(file), nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, 1, result.FilesProcessed)
+			assert.Zero(t, result.Stats.Skipped)
+			require.Len(t, provider.parseRequests, 1)
+			assert.True(t, provider.parseRequests[0].ForceParse)
+		})
+	}
+}
+
 func TestSyncChangedPathPlanFallbackDiscoveryStaysProviderBounded(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()

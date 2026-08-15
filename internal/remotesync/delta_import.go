@@ -61,6 +61,7 @@ type PreparedDeltaImport struct {
 	layout      importLayout
 	config      syncpkg.EngineConfig
 	plan        syncpkg.ChangedPathPlan
+	forceScope  syncpkg.ChangedPathPruneScope
 	cache       map[string]int64
 	remoteCache map[string]int64
 	full        bool
@@ -77,8 +78,9 @@ func (im Importer) PreparePending(
 	// FullReason can be restored from a retained journal. It preserves the
 	// pending full-import scope and its observable cause, but it must not turn
 	// an ordinary replay into another force-parse attempt. Only the current
-	// invocation's explicit Full request bypasses freshness and failure skips.
-	forceParse := im.Full
+	// invocation's explicit Full request or an armed host-wide invalidation
+	// bypasses freshness and failure skips.
+	forceParse := im.Full || request.Journal.InvalidateAll
 	stats := SyncStats{
 		FullReason:     request.FullReason,
 		JournalOutcome: JournalAbortedBeforeProcessing,
@@ -131,6 +133,7 @@ func (im Importer) PreparePending(
 	}
 	stats.ExactSources = len(plan.Files)
 	stats.FallbackProviders = len(plan.FallbackProviders)
+	forceScope := plan.PruneScope(armedJournalPhysicalPaths(layout, request.Journal))
 
 	full := request.Journal.FullImport || request.FullReason != "" || im.Full
 	ensureVisualStudioCopilotRemoteSkipMigration(im.DB, im.Host)
@@ -188,6 +191,7 @@ func (im Importer) PreparePending(
 		database:        im.DB, layout: layout, config: config, plan: plan,
 		cache:       preparedCache,
 		remoteCache: maps.Clone(pruned),
+		forceScope:  forceScope,
 		full:        full,
 		forceParse:  forceParse,
 		progress:    im.Progress, save: im.saveSkipCache, apply: apply,
@@ -216,8 +220,10 @@ func (pending *PreparedDeltaImport) Execute(
 			engineStats = engine.SyncAll(ctx, progress)
 		}
 	} else {
-		changedResult, processErr = engine.SyncChangedPathPlanContext(
-			ctx, pending.plan, hostProgress(pending.layout.paths.host, pending.progress),
+		changedResult, processErr = engine.SyncChangedPathPlanWithOptionsContext(
+			ctx, pending.plan, syncpkg.ChangedPathSyncOptions{
+				ForceFullParse: pending.forceScope,
+			}, hostProgress(pending.layout.paths.host, pending.progress),
 		)
 		engineStats = changedResult.Stats
 		stats.FilesDiscovered = changedResult.FilesDiscovered
@@ -447,18 +453,7 @@ func pruneRemoteSkipCache(
 	}
 	pruned := make(map[string]int64, len(cache))
 	maps.Copy(pruned, cache)
-	armed := make(map[string]struct{})
-	for _, entry := range journal.Entries {
-		if !entry.InvalidateCache {
-			continue
-		}
-		physical, err := safeLocalArchivePath(
-			layout.paths.root, filepath.FromSlash(entry.Path),
-		)
-		if err == nil {
-			armed[physical] = struct{}{}
-		}
-	}
+	armed := armedJournalPhysicalPaths(layout, journal)
 	scope := plan.PruneScope(armed)
 	stats.ExactScopes = len(scope.Files)
 	stats.ProviderScopes = len(scope.FallbackProviders)
@@ -509,6 +504,25 @@ func pruneRemoteSkipCache(
 		}
 	}
 	return pruned, stats
+}
+
+func armedJournalPhysicalPaths(
+	layout importLayout,
+	journal MirrorChangeJournal,
+) map[string]struct{} {
+	armed := make(map[string]struct{})
+	for _, entry := range journal.Entries {
+		if !entry.InvalidateCache {
+			continue
+		}
+		physical, err := safeLocalArchivePath(
+			layout.paths.root, filepath.FromSlash(entry.Path),
+		)
+		if err == nil {
+			armed[physical] = struct{}{}
+		}
+	}
+	return armed
 }
 
 func remoteCacheFamily(key string) (string, parser.AgentType) {
