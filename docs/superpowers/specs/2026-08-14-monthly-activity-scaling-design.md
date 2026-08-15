@@ -56,6 +56,32 @@ Every row scan and aggregation loop checks `context.Context`. The ordered SQL
 query may require an external sort over the full candidate set, so cancellation
 must reach both the database call and the row-processing loop.
 
+### Bounded pairing scan
+
+The backend bounds candidate-start rows to
+`[range_start - GapCapSeconds, calculation_end)`, where `calculation_end` is
+`range_end` for a complete report and `effective_end` for a partial report. A
+start before the left bound cannot produce activity inside the report after the
+shared gap cap is applied. The SQL query may use `GapCapSeconds` to derive this
+safe pruning bound; this does not move gap-cap semantics out of the shared
+aggregator.
+
+The timestamp predicate must not be applied to the same row set on which a
+window function establishes adjacency. Window functions run after `WHERE`, so
+that shape would remove out-of-range messages before pairing and silently join
+messages that are not adjacent by ordinal. Instead, each bounded candidate-start
+row resolves its true next timestamped message by ordinal, using an indexed
+successor lookup or an equivalent query shape that preserves full-session
+adjacency.
+
+The successor lookup has no right timestamp bound. A start just before
+`calculation_end` must distinguish a real last message, which produces no
+velocity interval, from a message whose successor lies beyond the boundary,
+which produces an interval clipped at the boundary. The successor's role and
+model are also retained so closing-message model attribution remains shared and
+correct. Tests cover pairs straddling both pruning edges and ordinal sequences
+whose timestamps are not monotone.
+
 ### Single-pass aggregation
 
 The shared aggregator consumes candidates chronologically and keeps only:
@@ -187,6 +213,12 @@ it remains valid across daemon restarts. The token is integrity-protected, not
 encrypted; it contains no information that the corresponding report query did
 not already send to the server.
 
+Version 6 assumes the compact encoded token remains within practical HTTP
+request-target limits for currently accepted filters. Token-length tests cover
+the largest supported filter payload. If that assumption stops holding, the
+sessions operation must move the token into a request body rather than truncate
+the query metadata or add an undeclared stateful stub fallback.
+
 The source probe is a small backend query over scalars such as matching-session
 count, maximum relevant session sync marker or last activity, matching usage row
 count and maximum usage marker, plus the effective pricing and project identity
@@ -241,6 +273,11 @@ Eviction considers all of these limits:
 The accounting includes bitmap capacity, strings, row storage, maps, and lazy
 sort permutations. The implementation documents its estimation method and tests
 eviction at each bound.
+
+Idle expiry is intentionally sliding: a successful report or page access
+refreshes the entry's last-access time, while an abandoned report expires 15
+minutes after its final access. Cache tests use idle-expiry terminology and a
+controllable clock so activity, not build time, governs expiration.
 
 If one report cannot fit, its summary and embedded first page still complete,
 but the artifacts are not retained. Later pages use the stateless miss path. The
@@ -315,8 +352,12 @@ gap clipping, closing-model attribution, and the existing usage dedup rules. The
 old path is removed only after this suite passes.
 
 Backend parity tests compare the ordered candidate streams themselves before
-comparing final reports, session pages, membership bitmaps, and cursors. A
-candidate-level diff makes SQL pairing or timestamp drift local and visible.
+comparing final reports, session pages, membership bitmaps, and cursors. Each
+backend's SQL stream is also compared with the Go slice-backed adapter's pairing
+of the same complete fixture, making that adapter the single reference
+implementation rather than merely proving that three SQL queries agree. The
+fixture includes adjacent pairs straddling both scan bounds. A candidate-level
+diff makes SQL pairing, pruning, or timestamp drift local and visible.
 
 Additional behavioral tests cover:
 
