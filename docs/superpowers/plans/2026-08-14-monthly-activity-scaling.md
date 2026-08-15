@@ -58,7 +58,8 @@ ______________________________________________________________________
     Cover range clipping, zero/negative gaps, gap capping, closing-message model
     attribution, carried concurrency at bucket boundaries, sub-second spans,
     usage-only sessions, duplicate usage rows, cost allocation, and sessions
-    tied on agent minutes.
+    tied on agent minutes. Include adjacent pairs that straddle both
+    `[range_start - GapCapSeconds, calculation_end)` scan bounds.
 
 - [ ] **Step 2: Add randomized differential fixtures**
 
@@ -161,9 +162,11 @@ ______________________________________________________________________
 - [ ] **Step 1: Add candidate-level parity assertions**
 
     Seed ordinal-vs-timestamp disagreement, clipped starts, microsecond
-    timestamps, duplicate usage rows, and multiple agents. Compare normalized
-    candidate streams from SQLite, PostgreSQL, and DuckDB before final report
-    comparison.
+    timestamps, duplicate usage rows, multiple agents, a predecessor before the
+    left pruning bound, and a successor beyond the right bound. Compare each
+    normalized backend stream with the Go slice-backed adapter's pairing of the
+    complete fixture, then compare SQLite, PostgreSQL, and DuckDB with each
+    other before final report comparison.
 
 - [ ] **Step 2: Add row-scan cancellation tests**
 
@@ -182,9 +185,13 @@ ______________________________________________________________________
 
 - [ ] **Step 4: Implement mechanical pairing queries**
 
-    Use a window function partitioned by session and ordered by ordinal. Emit
-    candidates ordered by start and leave clipping, caps, rejection, and model
-    semantics to `internal/activity`.
+    Bound candidate-start rows to
+    `[range_start - GapCapSeconds, calculation_end)`. For each start, resolve
+    the true next timestamped message by ordinal through an indexed successor
+    lookup or an equivalent query shape. Do not apply the timestamp predicate to
+    the same row set used by a window function to establish adjacency, and do
+    not right-bound the successor lookup. Emit candidates ordered by start and
+    leave clipping, caps, rejection, and model semantics to `internal/activity`.
 
 - [ ] **Step 5: Connect progress and context checks**
 
@@ -265,7 +272,9 @@ ______________________________________________________________________
 
     Assert canonical round-trip, signature rejection, algorithm/schema version
     rejection, and successful decoding by a new store instance configured with
-    the same persisted cursor secret.
+    the same persisted cursor secret. Cover the largest supported filter token
+    and reject an encoded token that exceeds the documented practical URL limit
+    without truncating metadata or creating a stateful stub.
 
 - [ ] **Step 2: Write failing probe and artifact-digest tests**
 
@@ -275,9 +284,11 @@ ______________________________________________________________________
 
 - [ ] **Step 3: Write failing cache-bound tests**
 
-    Cover idle expiry, three-entry eviction, 750,000-row eviction, 256 MiB
-    accounting, lazy-sort accounting, one-report overflow, and no metadata stub
-    after eviction.
+    Use a controllable clock to prove successful access slides the 15-minute idle
+    deadline while an abandoned entry expires 15 minutes after its final access.
+    Also cover three-entry eviction, 750,000-row eviction, 256 MiB accounting,
+    lazy-sort accounting, one-report overflow, and no metadata stub after
+    eviction.
 
 - [ ] **Step 4: Write failing singleflight tests**
 
