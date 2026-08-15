@@ -143,8 +143,10 @@ func TestActivityReport_UsesDiscoveredDaemon(t *testing.T) {
 }
 
 func TestFetchHTTPActivityReportContinuesRequestedGeneration(t *testing.T) {
+	reportRequests := 0
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/activity/report", func(w http.ResponseWriter, _ *http.Request) {
+		reportRequests++
 		require.NoError(t, json.NewEncoder(w).Encode(activity.Report{
 			ReportID: "fresh-report", Timezone: "UTC",
 		}))
@@ -153,6 +155,7 @@ func TestFetchHTTPActivityReportContinuesRequestedGeneration(t *testing.T) {
 		"/api/v1/activity/report/original-report/sessions",
 		func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "original-cursor", r.URL.Query().Get("cursor"))
+			assert.Equal(t, "true", r.URL.Query().Get("include_report"))
 			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 				"report_id": "original-report",
 				"sessions":  []activity.SessionRow{{SessionID: "continued"}},
@@ -176,6 +179,8 @@ func TestFetchHTTPActivityReportContinuesRequestedGeneration(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
+	assert.Zero(t, reportRequests,
+		"saved-generation continuation must not build an unrelated fresh report")
 	assert.Equal(t, "original-report", report.ReportID)
 	require.Len(t, report.BySession, 1)
 	assert.Equal(t, "continued", report.BySession[0].SessionID)

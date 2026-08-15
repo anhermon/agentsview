@@ -551,9 +551,19 @@ func TestActivityReportEndpointNegotiatesProgressAndPagesSessions(t *testing.T) 
 	require.Len(t, first.Sessions, 1)
 	require.NotEmpty(t, first.NextCursor)
 	assert.Equal(t, 2, first.Total)
-	require.NotNil(t, first.Report)
-	assert.Equal(t, report.ReportID, first.Report.ReportID)
-	assert.Equal(t, first.Sessions, first.Report.BySession)
+	assert.Nil(t, first.Report, "ordinary browser pages omit full report metadata")
+
+	metadataResponse := te.get(t, "/api/v1/activity/report/"+report.ReportID+
+		"/sessions?limit=1&include_report=true")
+	assertStatus(t, metadataResponse, http.StatusOK)
+	var metadataPage struct {
+		Sessions []activity.SessionRow `json:"sessions"`
+		Report   *activity.Report      `json:"report"`
+	}
+	require.NoError(t, json.Unmarshal(metadataResponse.Body.Bytes(), &metadataPage))
+	require.NotNil(t, metadataPage.Report)
+	assert.Equal(t, report.ReportID, metadataPage.Report.ReportID)
+	assert.Equal(t, metadataPage.Sessions, metadataPage.Report.BySession)
 	secondResponse := te.get(t, "/api/v1/activity/report/"+report.ReportID+
 		"/sessions?limit=1&cursor="+url.QueryEscape(first.NextCursor))
 	assertStatus(t, secondResponse, http.StatusOK)

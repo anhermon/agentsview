@@ -10,12 +10,13 @@ import (
 )
 
 type activityReportSessionsInput struct {
-	ReportID  string           `path:"report_id" required:"true" doc:"Signed Activity report ID"`
-	Limit     int              `query:"limit" minimum:"0" maximum:"500" doc:"Maximum session rows"`
-	Cursor    string           `query:"cursor" doc:"Opaque page cursor"`
-	Sort      string           `query:"sort" doc:"Sort: agent_minutes, cost, first_active, project, or agent"`
-	Direction string           `query:"direction" enum:"asc,desc" doc:"Sort direction"`
-	Bucket    optionalIntParam `query:"bucket" minimum:"0" doc:"Optional timeline bucket index"`
+	ReportID      string           `path:"report_id" required:"true" doc:"Signed Activity report ID"`
+	Limit         int              `query:"limit" minimum:"0" maximum:"500" doc:"Maximum session rows"`
+	Cursor        string           `query:"cursor" doc:"Opaque page cursor"`
+	Sort          string           `query:"sort" doc:"Sort: agent_minutes, cost, first_active, project, or agent"`
+	Direction     string           `query:"direction" enum:"asc,desc" doc:"Sort direction"`
+	Bucket        optionalIntParam `query:"bucket" minimum:"0" doc:"Optional timeline bucket index"`
+	IncludeReport bool             `query:"include_report" doc:"Include full report metadata for stateless clients"`
 }
 
 type activityReportSessionsResponse struct {
@@ -154,15 +155,19 @@ func (s *Server) humaActivityReportSessions(
 			return nil, internalError("activity session cursor error", err)
 		}
 	}
-	pageReport := artifacts.Report
-	pageReport.ReportID = in.ReportID
-	pageReport.BySession = page.Sessions
-	pageReport.SessionsNextCursor = page.NextCursor
-	pageReport.SessionsTotal = page.Total
-	return &jsonOutput[activityReportSessionsResponse]{Body: activityReportSessionsResponse{
+	response := activityReportSessionsResponse{
 		ReportID: in.ReportID, Sessions: page.Sessions,
-		NextCursor: page.NextCursor, Total: page.Total, Report: &pageReport,
-	}}, nil
+		NextCursor: page.NextCursor, Total: page.Total,
+	}
+	if in.IncludeReport {
+		pageReport := artifacts.Report
+		pageReport.ReportID = in.ReportID
+		pageReport.BySession = page.Sessions
+		pageReport.SessionsNextCursor = page.NextCursor
+		pageReport.SessionsTotal = page.Total
+		response.Report = &pageReport
+	}
+	return &jsonOutput[activityReportSessionsResponse]{Body: response}, nil
 }
 
 func sameOptionalBucket(left, right *int) bool {

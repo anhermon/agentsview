@@ -140,6 +140,9 @@ func OrderSessions(
 	}
 	slices.SortStableFunc(order, func(leftIndex, rightIndex int) int {
 		left, right := rows[leftIndex], rows[rightIndex]
+		if comparison := compareTimingPresence(left, right, options.Sort); comparison != 0 {
+			return comparison
+		}
 		comparison := compareSessionRows(left, right, options.Sort)
 		if options.Direction == "desc" {
 			comparison = -comparison
@@ -150,6 +153,28 @@ func OrderSessions(
 		return strings.Compare(left.SessionID, right.SessionID)
 	})
 	return order, nil
+}
+
+// compareTimingPresence partitions untimed rows after timed rows before sort
+// direction is applied. A nil agent-minutes/window value therefore stays at
+// the bottom for both ascending and descending timing sorts.
+func compareTimingPresence(left, right SessionRow, sortKey SessionSort) int {
+	var leftNil, rightNil bool
+	switch sortKey {
+	case SessionSortAgentMinutes:
+		leftNil, rightNil = left.AgentMinutes == nil, right.AgentMinutes == nil
+	case SessionSortFirstActive:
+		leftNil, rightNil = left.FirstActive == nil, right.FirstActive == nil
+	default:
+		return 0
+	}
+	if leftNil == rightNil {
+		return 0
+	}
+	if leftNil {
+		return 1
+	}
+	return -1
 }
 
 // PageSessionsFromOrder materializes one bounded page from a deterministic

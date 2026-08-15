@@ -114,6 +114,7 @@ export class ActivityService {
     sort,
     direction,
     bucket,
+    includeReport,
   }: {
     /**
      * Signed Activity report ID
@@ -139,6 +140,10 @@ export class ActivityService {
      * Optional timeline bucket index
      */
     bucket?: number,
+    /**
+     * Include full report metadata for stateless clients
+     */
+    includeReport?: boolean,
   }): CancelablePromise<ActivityReportSessionsResponse> {
     return __request(OpenAPI, {
       method: 'GET',
@@ -152,6 +157,7 @@ export class ActivityService {
         'sort': sort,
         'direction': direction,
         'bucket': bucket,
+        'include_report': includeReport,
       },
       errors: {
         400: `Bad Request`,

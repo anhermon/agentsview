@@ -55,6 +55,39 @@ func TestPageSessionsAlternateSortHasSessionIDTieBreak(t *testing.T) {
 	}
 }
 
+func TestPageSessionsTimingSortsKeepUntimedRowsLast(t *testing.T) {
+	one, two := 1.0, 2.0
+	early, late := "2026-07-01T01:00:00Z", "2026-07-01T02:00:00Z"
+	rows := []SessionRow{
+		{SessionID: "untimed"},
+		{SessionID: "late", AgentMinutes: &two, FirstActive: &late},
+		{SessionID: "early", AgentMinutes: &one, FirstActive: &early},
+	}
+	for _, test := range []struct {
+		name      string
+		sort      SessionSort
+		direction string
+		want      []string
+	}{
+		{"agent minutes ascending", SessionSortAgentMinutes, "asc", []string{"early", "late", "untimed"}},
+		{"agent minutes descending", SessionSortAgentMinutes, "desc", []string{"late", "early", "untimed"}},
+		{"first active ascending", SessionSortFirstActive, "asc", []string{"early", "late", "untimed"}},
+		{"first active descending", SessionSortFirstActive, "desc", []string{"late", "early", "untimed"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page, err := PageSessions(rows, nil, SessionPageOptions{
+				Sort: test.sort, Direction: test.direction,
+			})
+			require.NoError(t, err)
+			got := make([]string, 0, len(page.Sessions))
+			for _, row := range page.Sessions {
+				got = append(got, row.SessionID)
+			}
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
 func TestArtifactDigestIsIndependentOfMembershipMapOrder(t *testing.T) {
 	left := CandidateArtifacts{
 		Report:     Report{Timezone: "UTC"},

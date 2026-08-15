@@ -74,8 +74,13 @@
   });
 
   async function selectBucket(sel: { idx: number; label: string } | null) {
-    slotFilter = sel;
-    await activity.loadSessionPage({ bucket: sel?.idx ?? null });
+    const generation = activity.reportGeneration;
+    if (
+      await activity.loadSessionPage({ bucket: sel?.idx ?? null })
+      && activity.reportGeneration === generation
+    ) {
+      slotFilter = sel;
+    }
   }
 
   async function sortSessions(

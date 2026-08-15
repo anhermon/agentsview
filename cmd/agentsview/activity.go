@@ -86,6 +86,11 @@ func writeActivityReport(r activity.Report, jsonOutput bool) {
 func fetchHTTPActivityReport(
 	ctx context.Context, tr transport, authToken string, cfg ActivityReportConfig,
 ) (activity.Report, error) {
+	if cfg.SessionsReportID != "" {
+		return fetchHTTPActivitySessionPage(
+			ctx, tr, authToken, cfg, activity.Report{},
+		)
+	}
 	q := url.Values{}
 	setIfNotEmpty := func(k, v string) {
 		if v != "" {
@@ -186,6 +191,9 @@ func fetchHTTPActivitySessionPage(
 	}
 	if options.Bucket != nil {
 		query.Set("bucket", strconv.Itoa(*options.Bucket))
+	}
+	if cfg.SessionsReportID != "" {
+		query.Set("include_report", "true")
 	}
 	endpoint := strings.TrimSuffix(tr.URL, "/") + "/api/v1/activity/report/" +
 		url.PathEscape(reportID) + "/sessions?" + query.Encode()

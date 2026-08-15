@@ -884,6 +884,11 @@ GET /api/v1/activity/report
 GET /api/v1/activity/report/{report_id}/sessions
 ```
 
+Session-page responses omit the complete report by default so browser sorting,
+bucket filtering, and pagination stay page-bounded. Stateless clients can add
+`include_report=true`; a `refresh_required` response includes its complete
+replacement report regardless.
+
 Activity includes one-shot sessions by default. Automated sessions
 are also included by default and can be filtered with the
 `automation` query parameter.
