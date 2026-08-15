@@ -19,12 +19,22 @@ var ErrUnifiedRebuildAborted = errors.New(
 // RebuildContributor adds another configured sync source to an atomic full
 // rebuild. Contributors run sequentially against the same temporary database.
 type RebuildContributor struct {
-	Name      string
-	Config    EngineConfig
+	Name   string
+	Config EngineConfig
+
+	// ForceParse bypasses freshness gates for every contributor source. Remote
+	// explicit-full imports use this to preserve their parsing contract while
+	// participating in a unified replacement-database rebuild.
+	ForceParse bool
+
 	Progress  func(Progress) Progress
 	Started   func()
 	Finished  func(SyncStats, error)
 	AfterSync func(*Engine, *db.DB) error
+	// AfterFailure runs before an incomplete contributor's replacement
+	// database is discarded. The database argument is the active archive, so
+	// callers can preserve retry state produced by the failed attempt.
+	AfterFailure func(*Engine, *db.DB) error
 }
 
 // RebuildOptions configures optional sources for an atomic full rebuild.
