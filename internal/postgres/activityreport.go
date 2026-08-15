@@ -44,6 +44,21 @@ func activityReportRangeBoundsUTC(q activity.Query) (string, string) {
 func (s *Store) GetActivityReport(
 	ctx context.Context, f db.AnalyticsFilter, q activity.Query,
 ) (activity.Report, error) {
+	artifacts, err := s.BuildActivityReportArtifacts(ctx, f, q, nil)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	artifacts.Report.BySession = artifacts.Sessions
+	return artifacts.Report, nil
+}
+
+func (s *Store) BuildActivityReportArtifacts(
+	ctx context.Context,
+	f db.AnalyticsFilter,
+	q activity.Query,
+	onProgress activity.ProgressFunc,
+) (activity.CandidateArtifacts, error) {
+	pgReportProgress(onProgress, activity.Progress{Phase: activity.ProgressLoadingSessions})
 	f.IncludeSubagents = true
 	f.IncludeForks = true
 	rangeStartUTC, rangeEndUTC := activityReportRangeBoundsUTC(q)
@@ -53,15 +68,20 @@ func (s *Store) GetActivityReport(
 	sessions, ids, err := s.activityReportSessions(
 		ctx, f, rangeStartUTC, rangeEndUTC)
 	if err != nil {
-		return activity.Report{}, err
+		return activity.CandidateArtifacts{}, err
 	}
+	pgReportProgress(onProgress, activity.Progress{
+		Phase: activity.ProgressLoadingUsage, SessionsTotal: len(sessions),
+	})
 
 	usage, pricing, err := s.activityReportUsage(ctx, ids, lowerBound, upperBound, q)
 	if err != nil {
-		return activity.Report{}, err
+		return activity.CandidateArtifacts{}, err
 	}
 
-	report, err := activity.AggregateCandidateSource(ctx, activity.Params{
+	rowsProcessed := int64(0)
+	source := s.activityReportCandidateSource(ids, q)
+	artifacts, err := activity.BuildCandidateArtifactsFromSourceWithSurvivorUsage(ctx, activity.Params{
 		RangeStart:    q.RangeStart,
 		RangeEnd:      q.RangeEnd,
 		Loc:           q.Loc,
@@ -69,20 +89,51 @@ func (s *Store) GetActivityReport(
 		Partial:       q.Partial,
 		GapCapSeconds: q.GapCapSeconds,
 		Bucket:        q.Bucket,
-	}, sessions, s.activityReportCandidateSource(ids, q), usage)
+	}, sessions, func(
+		ctx context.Context, yield func(activity.IntervalCandidate) error,
+	) error {
+		pgReportProgress(onProgress, activity.Progress{
+			Phase: activity.ProgressScanningActivity, SessionsTotal: len(sessions),
+		})
+		return source(ctx, func(candidate activity.IntervalCandidate) error {
+			rowsProcessed++
+			pgReportProgress(onProgress, activity.Progress{
+				Phase:         activity.ProgressScanningActivity,
+				SessionsTotal: len(sessions), RowsProcessed: rowsProcessed,
+			})
+			return yield(candidate)
+		})
+	}, usage)
 	if err != nil {
-		return activity.Report{}, fmt.Errorf("aggregating pg activity report: %w", err)
+		return activity.CandidateArtifacts{}, fmt.Errorf("aggregating pg activity report: %w", err)
 	}
-	report.SchemaVersion = export.ActivityReportSchemaVersion
-	report.Pricing = pricing
+	pgReportProgress(onProgress, activity.Progress{
+		Phase: activity.ProgressFinalizing, SessionsTotal: len(sessions),
+		SessionsProcessed: len(sessions), RowsProcessed: rowsProcessed,
+	})
+	artifacts.Report.SchemaVersion = export.ActivityReportSchemaVersion
+	artifacts.Report.Pricing = pricing
 	projects, err := s.BuildProjectIdentityMap(ctx,
 		activityReportProjectLabels(sessions))
 	if err != nil {
-		return activity.Report{}, err
+		return activity.CandidateArtifacts{}, err
 	}
-	activity.SanitizeProjectLabels(&report, projects)
-	report.Projects = export.ProjectMapForWire(projects)
-	return report, nil
+	artifacts.Report.BySession = artifacts.Sessions
+	activity.SanitizeProjectLabels(&artifacts.Report, projects)
+	artifacts.Sessions = artifacts.Report.BySession
+	artifacts.Report.BySession = []activity.SessionRow{}
+	artifacts.Report.Projects = export.ProjectMapForWire(projects)
+	pgReportProgress(onProgress, activity.Progress{
+		Phase: activity.ProgressDone, SessionsTotal: len(sessions),
+		SessionsProcessed: len(sessions), RowsProcessed: rowsProcessed,
+	})
+	return artifacts, nil
+}
+
+func pgReportProgress(callback activity.ProgressFunc, progress activity.Progress) {
+	if callback != nil {
+		callback(progress)
+	}
 }
 
 // GetSessionUsageRows returns the backend-priced usage rows for the supplied
@@ -485,6 +536,15 @@ func (s *Store) activityReportCandidateSource(
 		}
 		return rows.Err()
 	}
+}
+
+// ActivityReportCandidateSource exposes the backend's mechanical pairing
+// stream for cross-backend contract tests. Activity semantics remain in the
+// shared aggregator.
+func (s *Store) ActivityReportCandidateSource(
+	ids []string, q activity.Query,
+) activity.CandidateSource {
+	return s.activityReportCandidateSource(ids, q)
 }
 
 // activityReportUsage selects complete snapshots across the padded range,

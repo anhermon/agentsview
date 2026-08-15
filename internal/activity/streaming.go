@@ -44,6 +44,7 @@ func (m BucketMembership) add(index int) {
 // membership retained by the server cache.
 type CandidateArtifacts struct {
 	Report     Report
+	Sessions   []SessionRow
 	Membership map[string]BucketMembership
 }
 
@@ -116,6 +117,7 @@ func AggregateCandidates(
 	usage []UsageRow,
 ) (Report, error) {
 	artifacts, err := BuildCandidateArtifacts(ctx, p, sessions, candidates, usage)
+	artifacts.Report.BySession = artifacts.Sessions
 	return artifacts.Report, err
 }
 
@@ -131,6 +133,7 @@ func AggregateCandidateSource(
 	artifacts, err := BuildCandidateArtifactsFromSource(
 		ctx, p, sessions, source, usage,
 	)
+	artifacts.Report.BySession = artifacts.Sessions
 	return artifacts.Report, err
 }
 
@@ -168,6 +171,35 @@ func BuildCandidateArtifactsFromSource(
 	sessions []SessionMeta,
 	source CandidateSource,
 	usage []UsageRow,
+) (CandidateArtifacts, error) {
+	return buildCandidateArtifactsFromSource(
+		ctx, p, sessions, source, usage, false,
+	)
+}
+
+// BuildCandidateArtifactsFromSourceWithSurvivorUsage is the store-facing
+// variant for usage rows that have already passed the shared survivor
+// selection. It prevents a second deduplication pass while keeping slice-backed
+// callers compatible with the raw-usage API above.
+func BuildCandidateArtifactsFromSourceWithSurvivorUsage(
+	ctx context.Context,
+	p Params,
+	sessions []SessionMeta,
+	source CandidateSource,
+	usage []UsageRow,
+) (CandidateArtifacts, error) {
+	return buildCandidateArtifactsFromSource(
+		ctx, p, sessions, source, usage, true,
+	)
+}
+
+func buildCandidateArtifactsFromSource(
+	ctx context.Context,
+	p Params,
+	sessions []SessionMeta,
+	source CandidateSource,
+	usage []UsageRow,
+	usageIsSurvivorSet bool,
 ) (CandidateArtifacts, error) {
 	windows := rangeWindows(p)
 	report := newReport(p, windows)
@@ -221,17 +253,27 @@ func BuildCandidateArtifactsFromSource(
 	if report.Totals.IdleMinutes < 0 {
 		report.Totals.IdleMinutes = 0
 	}
-	survivors := dedupUsage(p.RangeStart, p.RangeEnd, p.EffectiveEnd, usage)
-	if err := applyUsageRows(&report, windows, survivors, automatedBy); err != nil {
+	survivors := usage
+	if !usageIsSurvivorSet {
+		survivors = dedupUsage(p.RangeStart, p.RangeEnd, p.EffectiveEnd, usage)
+	}
+	allocated := AllocateUsageCosts(survivors)
+	if err := applyUsageRows(
+		&report, windows, survivors, allocated, automatedBy,
+	); err != nil {
 		return CandidateArtifacts{}, err
 	}
 	if err := buildSessionsTableFromDedupedUsage(
-		&report, sessions, aggregates, survivors,
+		&report, sessions, aggregates, survivors, allocated,
 	); err != nil {
 		return CandidateArtifacts{}, err
 	}
 	report.Intervals = []ReportInterval{}
-	return CandidateArtifacts{Report: report, Membership: membership}, nil
+	rows := report.BySession
+	report.BySession = []SessionRow{}
+	return CandidateArtifacts{
+		Report: report, Sessions: rows, Membership: membership,
+	}, nil
 }
 
 func effectiveCandidateInterval(p Params, candidate IntervalCandidate) (interval, bool) {

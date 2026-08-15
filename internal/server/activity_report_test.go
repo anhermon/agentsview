@@ -3,6 +3,9 @@ package server_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -520,4 +523,68 @@ func TestActivityReportEndpoint_GitBranchFilter(t *testing.T) {
 	assertStatus(t, filtered, http.StatusOK)
 	assert.Equal(t, 1, decode[activity.Report](t, filtered).Totals.Sessions,
 		"git_branch filter restricts the activity report to alpha/main")
+}
+
+func TestActivityReportEndpointNegotiatesProgressAndPagesSessions(t *testing.T) {
+	te := setup(t)
+	seedActivityReportFixture(t, te)
+	path := "/api/v1/activity/report?preset=day&date=" + activityDate + "&timezone=UTC"
+
+	plain := te.get(t, path)
+	assertStatus(t, plain, http.StatusOK)
+	report := decode[activity.Report](t, plain)
+	require.NotEmpty(t, report.ReportID)
+	require.Len(t, report.BySession, 2)
+	assert.Equal(t, 2, report.SessionsTotal)
+	assert.NotContains(t, plain.Body.String(), `"intervals"`)
+
+	pageResponse := te.get(t, "/api/v1/activity/report/"+report.ReportID+
+		"/sessions?limit=1")
+	assertStatus(t, pageResponse, http.StatusOK)
+	var first struct {
+		Sessions   []activity.SessionRow `json:"sessions"`
+		NextCursor string                `json:"next_cursor"`
+		Total      int                   `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal(pageResponse.Body.Bytes(), &first))
+	require.Len(t, first.Sessions, 1)
+	require.NotEmpty(t, first.NextCursor)
+	assert.Equal(t, 2, first.Total)
+	secondResponse := te.get(t, "/api/v1/activity/report/"+report.ReportID+
+		"/sessions?limit=1&cursor="+url.QueryEscape(first.NextCursor))
+	assertStatus(t, secondResponse, http.StatusOK)
+	var second struct {
+		Sessions []activity.SessionRow `json:"sessions"`
+	}
+	require.NoError(t, json.Unmarshal(secondResponse.Body.Bytes(), &second))
+	require.Len(t, second.Sessions, 1)
+	assert.NotEqual(t, first.Sessions[0].SessionID, second.Sessions[0].SessionID)
+
+	started, ended := activityDate+"T11:00:00Z", activityDate+"T11:03:00Z"
+	te.seedSession(t, "d3", "gamma", 2, func(s *db.Session) {
+		s.StartedAt, s.EndedAt = &started, &ended
+	})
+	te.seedMessages(t, "d3", 2, func(i int, message *db.Message) {
+		message.Timestamp = []string{started, activityDate + "T11:02:00Z"}[i]
+	})
+	refreshResponse := te.get(t, "/api/v1/activity/report/"+report.ReportID+
+		"/sessions?limit=1")
+	assertStatus(t, refreshResponse, http.StatusOK)
+	var refreshed struct {
+		RefreshRequired bool             `json:"refresh_required"`
+		Report          *activity.Report `json:"report"`
+	}
+	require.NoError(t, json.Unmarshal(refreshResponse.Body.Bytes(), &refreshed))
+	assert.True(t, refreshed.RefreshRequired)
+	require.NotNil(t, refreshed.Report)
+	assert.Equal(t, 3, refreshed.Report.Totals.Sessions)
+	assert.NotEqual(t, report.ReportID, refreshed.Report.ReportID)
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Accept", "text/event-stream")
+	recorder := httptest.NewRecorder()
+	te.handler.ServeHTTP(recorder, req)
+	assertStatus(t, recorder, http.StatusOK)
+	assert.True(t, strings.Contains(recorder.Body.String(), "event: progress\n"))
+	assert.True(t, strings.Contains(recorder.Body.String(), "event: report\n"))
 }

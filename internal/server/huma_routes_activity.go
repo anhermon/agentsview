@@ -2,17 +2,25 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"go.kenn.io/agentsview/internal/activity"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/export"
 )
 
 func (s *Server) registerActivityRoutes() {
 	group := newRouteGroup(s.api, "/api/v1/activity", "Activity")
-	get(s, group, "/report", "Get activity report", s.humaActivityReport)
+	stream(s, group, http.MethodGet, "/report", "Get activity report",
+		s.humaActivityReport, streamJSONResponseSchema("ActivityReport"))
+	get(s, group, "/report/{report_id}/sessions",
+		"Page activity report sessions", s.humaActivityReportSessions)
 }
 
 type activityReportInput struct {
@@ -45,7 +53,7 @@ type resolvedActivitySelection struct {
 
 func (s *Server) humaActivityReport(
 	ctx context.Context, in *activityReportInput,
-) (*jsonOutput[activity.Report], error) {
+) (*huma.StreamResponse, error) {
 	selection, err := resolveActivitySelection(activitySelectionInput{
 		Preset: in.Preset, Date: in.Date, From: in.From, To: in.To,
 		Timezone: in.Timezone, Bucket: in.Bucket, Project: in.Project,
@@ -55,17 +63,142 @@ func (s *Server) humaActivityReport(
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.db.GetActivityReport(ctx, selection.filter, selection.query)
-	if err != nil {
-		if handled := handleHumaContextError(err); handled != nil {
-			return nil, handled
+	return &huma.StreamResponse{Body: func(hctx huma.Context) {
+		var sse *SSEStream
+		streaming := strings.Contains(hctx.Header("Accept"), "text/event-stream")
+		if streaming {
+			var ok bool
+			sse, ok = newHumaSSEStream(hctx)
+			if !ok {
+				writeHumaJSON(hctx, http.StatusInternalServerError,
+					apiErrorResponse{Message: "streaming not supported"})
+				return
+			}
 		}
-		if handled := handleHumaReadOnly(err); handled != nil {
-			return nil, handled
+		var onProgress activity.ProgressFunc
+		if streaming {
+			sendProgress := newPushProgressStreamSender(func(progress activity.Progress) {
+				sse.SendJSON("progress", progress)
+			})
+			onProgress = sendProgress
 		}
-		return nil, internalError("activity report error", err)
+		report, buildErr := s.buildActivityReport(ctx, selection, onProgress)
+		if buildErr != nil {
+			if streaming {
+				sse.SendJSON("error", map[string]string{"error": buildErr.Error()})
+				return
+			}
+			writeHumaJSON(hctx, http.StatusInternalServerError,
+				apiErrorResponse{Message: buildErr.Error()})
+			return
+		}
+		if streaming {
+			sse.SendJSON("report", report)
+			return
+		}
+		writeHumaJSON(hctx, http.StatusOK, report)
+	}}, nil
+}
+
+func (s *Server) buildActivityReport(
+	ctx context.Context,
+	selection resolvedActivitySelection,
+	onProgress activity.ProgressFunc,
+) (activity.Report, error) {
+	artifactStore, artifactsOK := s.db.(db.ActivityReportArtifactStore)
+	tokenStore, tokenOK := s.db.(db.ActivityReportTokenStore)
+	if !artifactsOK || !tokenOK {
+		return s.db.GetActivityReport(ctx, selection.filter, selection.query)
 	}
-	return &jsonOutput[activity.Report]{Body: r}, nil
+	probe, err := s.activitySourceProbe(ctx)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	artifacts, err := s.buildActivityArtifacts(
+		ctx, artifactStore, selection, probe, onProgress,
+	)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	return s.prepareActivityReport(selection, tokenStore, artifacts, probe)
+}
+
+func (s *Server) activitySourceProbe(ctx context.Context) (activity.SourceProbe, error) {
+	probeStore, ok := s.db.(db.ActivityReportProbeStore)
+	if !ok {
+		return activity.SourceProbe{}, nil
+	}
+	return probeStore.ActivityReportSourceProbe(ctx)
+}
+
+func (s *Server) buildActivityArtifacts(
+	ctx context.Context,
+	artifactStore db.ActivityReportArtifactStore,
+	selection resolvedActivitySelection,
+	probe activity.SourceProbe,
+	onProgress activity.ProgressFunc,
+) (activity.CandidateArtifacts, error) {
+	keyPayload, err := json.Marshal(
+		newActivityReportTokenPayload(selection, "", probe),
+	)
+	if err != nil {
+		return activity.CandidateArtifacts{}, err
+	}
+	if s.activityReportFlights == nil {
+		s.activityReportFlights = newActivityReportBuildGroup()
+	}
+	return s.activityReportFlights.do(ctx, string(keyPayload), func(buildCtx context.Context) (
+		activity.CandidateArtifacts, error,
+	) {
+		return artifactStore.BuildActivityReportArtifacts(
+			buildCtx, selection.filter, selection.query, onProgress,
+		)
+	})
+}
+
+func (s *Server) prepareActivityReport(
+	selection resolvedActivitySelection,
+	tokenStore db.ActivityReportTokenStore,
+	artifacts activity.CandidateArtifacts,
+	probe activity.SourceProbe,
+) (activity.Report, error) {
+	digest, err := activity.ArtifactDigest(artifacts)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	reportID, err := encodeActivityToken(
+		tokenStore, newActivityReportTokenPayload(selection, digest, probe),
+	)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	page, err := activity.PageSessions(
+		artifacts.Sessions, artifacts.Membership, activity.SessionPageOptions{},
+	)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	if page.HasNext {
+		page.NextCursor, err = encodeActivityToken(tokenStore, activitySessionCursorPayload{
+			Version: activityReportTokenVersion,
+			Schema:  export.ActivityReportSchemaVersion,
+			Digest:  digest, Offset: page.Next,
+			Sort: activity.SessionSortAgentMinutes, Direction: "desc",
+		})
+		if err != nil {
+			return activity.Report{}, err
+		}
+	}
+	report := artifacts.Report
+	report.ReportID = reportID
+	report.BySession = page.Sessions
+	report.SessionsNextCursor = page.NextCursor
+	report.SessionsTotal = page.Total
+	if s.activityReports == nil {
+		s.activityReports = newActivityReportCache()
+	}
+	s.activityReports.put(reportID, digest, artifacts)
+	return report, nil
 }
 
 func resolveActivitySelection(

@@ -39,10 +39,32 @@ func TestActivityReportCommand_Flags(t *testing.T) {
 	for _, name := range []string{
 		"preset", "date", "from", "to", "timezone",
 		"bucket", "project", "agent", "machine", "json", "no-sync",
-		"offline",
+		"offline", "sessions-limit", "sessions-cursor", "sessions-sort",
+		"sessions-direction", "sessions-bucket",
 	} {
 		assert.NotNilf(t, cmd.Flags().Lookup(name), "flag --%s must exist", name)
 	}
+}
+
+func TestResolveActivityReportPagesSessionsWithDirectCursor(t *testing.T) {
+	dataDir := setupExportGoldenDataDir(t)
+	database := dbtest.OpenTestDBAt(t, sessionsDBPath(dataDir))
+	database.SetCursorSecret(goldenCursorSecret)
+	base := ActivityReportConfig{
+		Preset: "custom", From: "2026-07-03T10:00:00Z",
+		To: "2026-07-03T13:00:00Z", Timezone: "UTC", Bucket: "1h",
+		SessionsLimit: 1,
+	}
+	first, err := resolveActivityReport(base, database)
+	require.NoError(t, err)
+	require.Len(t, first.BySession, 1)
+	require.NotEmpty(t, first.SessionsNextCursor)
+
+	base.SessionsCursor = first.SessionsNextCursor
+	second, err := resolveActivityReport(base, database)
+	require.NoError(t, err)
+	require.Len(t, second.BySession, 1)
+	assert.NotEqual(t, first.BySession[0].SessionID, second.BySession[0].SessionID)
 }
 
 func TestActivityReportCommand_HelpText(t *testing.T) {
@@ -342,5 +364,5 @@ func TestActivityReportGolden(t *testing.T) {
 	})
 	require.NoError(t, err, "activity report json golden command")
 
-	assertGoldenBytes(t, "activity_report_v5.json", []byte(stdout))
+	assertGoldenBytes(t, "activity_report_v6.json", []byte(stdout))
 }

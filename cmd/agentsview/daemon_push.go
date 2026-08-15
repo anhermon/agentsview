@@ -166,7 +166,7 @@ func parseDaemonPushSSE[T, P any](
 			return nil
 		}
 		switch event {
-		case "done":
+		case "done", "report":
 			if err := json.Unmarshal([]byte(data.String()), &result); err != nil {
 				return fmt.Errorf("decoding daemon push result: %w", err)
 			}

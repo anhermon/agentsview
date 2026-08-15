@@ -106,16 +106,133 @@ func TestSQLiteActivityReportCandidateQueryUsesSessionOrdinalIndex(t *testing.T)
 	assert.NotContains(t, plan, "SCAN m")
 }
 
+func TestSQLiteActivityReportCandidateSourceStopsOnCancellation(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "cancel", "p", func(s *Session) {
+		s.StartedAt = Ptr("2026-06-16T10:00:00Z")
+		s.EndedAt = Ptr("2026-06-16T10:03:00Z")
+	})
+	for ordinal, timestamp := range []string{
+		"2026-06-16T10:00:00Z",
+		"2026-06-16T10:01:00Z",
+		"2026-06-16T10:02:00Z",
+		"2026-06-16T10:03:00Z",
+	} {
+		seedMessage(t, d, "cancel", ordinal, "user", timestamp, "")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	seen := 0
+	err := d.activityReportCandidateSource(
+		[]string{"cancel"}, dayQuery(t, "2026-06-16", "UTC"),
+	)(ctx, func(activity.IntervalCandidate) error {
+		seen++
+		cancel()
+		return nil
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, seen)
+}
+
 func BenchmarkSQLiteActivityReportCandidateSource100K(b *testing.B) {
+	d, ids, q := seedSQLiteActivityReportBenchmark(b)
+	source := d.activityReportCandidateSource(ids, q)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		count := 0
+		err := source(context.Background(), func(activity.IntervalCandidate) error {
+			count++
+			return nil
+		})
+		require.NoError(b, err)
+		require.Equal(b, 90_000, count)
+	}
+}
+
+// BenchmarkSQLiteActivityReportCandidateSourceLongSession covers the opposite
+// archive shape from the many-session benchmark: one transcript with a large
+// ordinal index range. It guards against accidentally turning the successor or
+// prior-model lookup into a per-candidate linear scan.
+func BenchmarkSQLiteActivityReportCandidateSourceLongSession(b *testing.B) {
+	d := testDB(b)
+	const messageCount = 100_001
+	_, err := d.getWriter().Exec(`
+		INSERT INTO sessions(
+			id, project, started_at, ended_at, message_count
+		) VALUES (
+			'bench-long', 'bench', '2026-07-01T00:00:00Z',
+			'2026-07-02T03:46:40Z', ?
+		)`, messageCount)
+	require.NoError(b, err)
+	_, err = d.getWriter().Exec(`
+		WITH RECURSIVE n(i) AS (
+			VALUES(0) UNION ALL SELECT i + 1 FROM n WHERE i < ?
+		)
+		INSERT INTO messages(
+			session_id, ordinal, role, content, timestamp, model
+		)
+		SELECT 'bench-long', i,
+			CASE WHEN i % 2 = 0 THEN 'user' ELSE 'assistant' END,
+			'x',
+			strftime('%Y-%m-%dT%H:%M:%SZ', '2026-07-01T00:00:00Z',
+				printf('+%d seconds', i)),
+			CASE WHEN i % 2 = 0 THEN '' ELSE 'model' END
+		FROM n`, messageCount-1)
+	require.NoError(b, err)
+	q, err := activity.ResolveQuery(activity.QueryInput{
+		Preset: "month", Date: "2026-07-01", Timezone: "UTC",
+	}, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(b, err)
+	source := d.activityReportCandidateSource([]string{"bench-long"}, q)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		count := 0
+		err := source(context.Background(), func(activity.IntervalCandidate) error {
+			count++
+			return nil
+		})
+		require.NoError(b, err)
+		require.Equal(b, messageCount-1, count)
+	}
+}
+
+func BenchmarkSQLiteActivityReportArtifacts100K(b *testing.B) {
+	d, _, q := seedSQLiteActivityReportBenchmark(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		artifacts, err := d.BuildActivityReportArtifacts(
+			context.Background(), AnalyticsFilter{Timezone: "UTC"}, q, nil,
+		)
+		require.NoError(b, err)
+		require.Len(b, artifacts.Sessions, 100_000)
+		page, err := activity.PageSessions(
+			artifacts.Sessions, artifacts.Membership, activity.SessionPageOptions{},
+		)
+		require.NoError(b, err)
+		report := artifacts.Report
+		report.BySession = page.Sessions
+		encoded, err := json.Marshal(report)
+		require.NoError(b, err)
+		b.ReportMetric(float64(len(encoded)), "response_bytes")
+	}
+}
+
+func seedSQLiteActivityReportBenchmark(
+	b *testing.B,
+) (*DB, []string, activity.Query) {
+	b.Helper()
 	d := testDB(b)
 	const sessionCount = 100_000
 	_, err := d.getWriter().Exec(`
 		WITH RECURSIVE n(i) AS (
 			VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < ?
 		)
-		INSERT INTO sessions(id, project, started_at, ended_at)
+		INSERT INTO sessions(id, project, started_at, ended_at, message_count)
 		SELECT printf('bench-%06d', i), 'bench',
-			'2026-07-01T10:00:00Z', '2026-07-28T10:02:00Z'
+			'2026-07-01T10:00:00Z', '2026-07-28T10:02:00Z', 2
 		FROM n`, sessionCount)
 	require.NoError(b, err)
 	_, err = d.getWriter().Exec(`
@@ -139,18 +256,7 @@ func BenchmarkSQLiteActivityReportCandidateSource100K(b *testing.B) {
 		Preset: "month", Date: "2026-07-01", Timezone: "UTC",
 	}, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	require.NoError(b, err)
-	source := d.activityReportCandidateSource(ids, q)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		count := 0
-		err := source(context.Background(), func(activity.IntervalCandidate) error {
-			count++
-			return nil
-		})
-		require.NoError(b, err)
-		require.Equal(b, 90_000, count)
-	}
+	return d, ids, q
 }
 
 func TestGetActivityReport_BasicConcurrency(t *testing.T) {
