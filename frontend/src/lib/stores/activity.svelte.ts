@@ -62,6 +62,10 @@ class ActivityStore {
   machine: string = $state("");
   automation: Automation = $state("all");
   report: Report | null = $state(null);
+  // Monotonic identity for successful full-report loads. report_id is
+  // deterministic for unchanged inputs, so it cannot signal that page-local
+  // drill-down state must be cleared after a manual refresh.
+  reportGeneration = $state(0);
   loading = $state(false);
   progress: ActivityReportProgress | null = $state(null);
   error: string | null = $state(null);
@@ -191,6 +195,7 @@ class ActivityStore {
       this.sessionsDirection = "desc";
       this.sessionsBucket = null;
       this.report = res;
+      this.reportGeneration++;
       this.lastUpdatedAt = Date.now();
       this.hasNewData = false;
       return true;
@@ -240,6 +245,7 @@ class ActivityStore {
       }
       if (page.refresh_required && page.report) {
         this.report = page.report;
+        this.reportGeneration++;
         this.sessionsSort = "agent_minutes";
         this.sessionsDirection = "desc";
         this.sessionsBucket = null;

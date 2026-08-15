@@ -84,7 +84,7 @@ func TestSQLiteActivityReportCandidatesMatchGoPairingAtScanBounds(t *testing.T) 
 	assert.Equal(t, want, got)
 }
 
-func TestSQLiteActivityReportCandidateQueryUsesTimestampRangeIndex(t *testing.T) {
+func TestSQLiteActivityReportCandidateQueryUsesExistingSessionIndex(t *testing.T) {
 	d := testDB(t)
 	q := dayQuery(t, "2026-06-16", "UTC")
 	rows, err := d.getReader().QueryContext(
@@ -103,7 +103,8 @@ func TestSQLiteActivityReportCandidateQueryUsesTimestampRangeIndex(t *testing.T)
 	}
 	require.NoError(t, rows.Err())
 	plan := strings.Join(details, "\n")
-	assert.Contains(t, plan, "idx_messages_activity_timestamp")
+	assert.Contains(t, plan, "idx_messages_velocity")
+	assert.NotContains(t, plan, "idx_messages_activity_timestamp")
 	assert.NotContains(t, plan, "SCAN m")
 }
 
@@ -134,11 +135,11 @@ func TestSQLiteActivityReportCandidateSourceStopsOnCancellation(t *testing.T) {
 	assert.Equal(t, 1, seen)
 }
 
-func TestSQLiteActivityReportCandidateSourceSupportsLegacyDatabaseWithoutRangeIndex(
+func TestSQLiteActivityReportCandidateSourceDoesNotRequireGlobalTimestampIndex(
 	t *testing.T,
 ) {
 	d := testDB(t)
-	_, err := d.getWriter().Exec(`DROP INDEX idx_messages_activity_timestamp`)
+	_, err := d.getWriter().Exec(`DROP INDEX IF EXISTS idx_messages_activity_timestamp`)
 	require.NoError(t, err)
 	insertSession(t, d, "legacy-index", "p", func(s *Session) {
 		s.StartedAt = Ptr("2026-06-16T10:00:00Z")

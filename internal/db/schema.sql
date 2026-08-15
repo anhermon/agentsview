@@ -230,10 +230,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_ordinal
     ON messages(session_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_messages_velocity
     ON messages(session_id, ordinal, role, timestamp, content_length);
-CREATE INDEX IF NOT EXISTS idx_messages_activity_timestamp
-    ON messages(timestamp, session_id, ordinal)
-    WHERE timestamp IS NOT NULL
-      AND timestamp != '';
 CREATE INDEX IF NOT EXISTS idx_messages_session_role
     ON messages(session_id, role);
 

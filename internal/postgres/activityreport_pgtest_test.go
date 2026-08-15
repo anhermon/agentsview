@@ -62,6 +62,21 @@ func seedPGDailyFixture(t *testing.T, store *Store) {
 	require.NoError(t, err, "insert messages")
 }
 
+func TestPGActivityReportSourceProbeUsesMirrorSchema(t *testing.T) {
+	_, store := prepareUsageSchema(t, "agentsview_activity_probe_test")
+	ctx := context.Background()
+
+	before, err := store.ActivityReportSourceProbe(ctx)
+	require.NoError(t, err)
+	seedPGDailyFixture(t, store)
+	after, err := store.ActivityReportSourceProbe(ctx)
+	require.NoError(t, err)
+
+	assert.Equal(t, before.SessionCount+2, after.SessionCount)
+	assert.NotEmpty(t, after.MaxSessionModified)
+	assert.Greater(t, after.MaxMessageID, before.MaxMessageID)
+}
+
 func TestPGGetActivityReport(t *testing.T) {
 	_, store := prepareUsageSchema(t, "agentsview_daily_report_test")
 	ctx := context.Background()

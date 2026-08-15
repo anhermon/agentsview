@@ -12,12 +12,19 @@ func (s *Store) ActivityReportSourceProbe(
 ) (activity.SourceProbe, error) {
 	var probe activity.SourceProbe
 	err := s.pg.QueryRowContext(ctx, `SELECT
-		(SELECT COUNT(*) FROM sessions),
-		COALESCE((SELECT MAX(local_modified_at)::text FROM sessions), ''),
-		COALESCE((SELECT MAX(data_version) FROM sessions), 0),
-		COALESCE((SELECT MAX(id) FROM messages), 0),
+		session_probe.session_count,
+		session_probe.max_updated_at,
+		session_probe.max_data_version,
+		session_probe.message_count,
 		COALESCE((SELECT MAX(id) FROM usage_events), 0),
-		COALESCE((SELECT MAX(updated_at)::text FROM model_pricing), '')`).Scan(
+		COALESCE((SELECT MAX(updated_at)::text FROM model_pricing), '')
+	FROM (
+		SELECT COUNT(*) AS session_count,
+			COALESCE(MAX(updated_at)::text, '') AS max_updated_at,
+			COALESCE(MAX(data_version), 0) AS max_data_version,
+			COALESCE(SUM(message_count), 0) AS message_count
+		FROM sessions
+	) AS session_probe`).Scan(
 		&probe.SessionCount, &probe.MaxSessionModified, &probe.MaxDataVersion,
 		&probe.MaxMessageID, &probe.MaxUsageID, &probe.MaxPricingUpdated,
 	)

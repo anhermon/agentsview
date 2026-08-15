@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"go.kenn.io/agentsview/internal/activity"
@@ -578,7 +577,7 @@ const activityReportCandidatesSQL = `SELECT
 		ORDER BY prior.ordinal DESC
 		LIMIT 1
 	), 'unknown')
-FROM messages m INDEXED BY idx_messages_activity_timestamp
+FROM messages m INDEXED BY idx_messages_velocity
 JOIN messages successor ON successor.id = (
 	SELECT next.id
 	FROM messages next
@@ -600,13 +599,6 @@ WHERE m.session_id IN (SELECT value FROM json_each(?))
 	AND agentsview_timestamp_unix_micro(m.timestamp) < ?
 ORDER BY agentsview_timestamp_unix_micro(m.timestamp),
 	m.session_id, m.ordinal`
-
-var activityReportCandidatesLegacySQL = strings.Replace(
-	activityReportCandidatesSQL,
-	"FROM messages m INDEXED BY idx_messages_activity_timestamp",
-	"FROM messages m",
-	1,
-)
 
 func (db *DB) activityReportCandidateSource(
 	ids []string, q activity.Query,
@@ -633,13 +625,6 @@ func (db *DB) activityReportCandidateSource(
 		rows, err := db.getReader().QueryContext(
 			ctx, activityReportCandidatesSQL, args...,
 		)
-		if err != nil && strings.Contains(
-			err.Error(), "no such index: idx_messages_activity_timestamp",
-		) {
-			rows, err = db.getReader().QueryContext(
-				ctx, activityReportCandidatesLegacySQL, args...,
-			)
-		}
 		if err != nil {
 			return fmt.Errorf("querying activity report candidates: %w", err)
 		}

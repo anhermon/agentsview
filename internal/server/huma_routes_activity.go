@@ -25,7 +25,7 @@ func (s *Server) registerActivityRoutes() {
 	group := newRouteGroup(s.api, "/api/v1/activity", "Activity")
 	stream(s, group, http.MethodGet, "/report", "Get activity report",
 		s.humaActivityReport, streamJSONResponseSchema("ActivityReport"))
-	get(s, group, "/report/{report_id}/sessions",
+	getLong(s, group, "/report/{report_id}/sessions",
 		"Page activity report sessions", s.humaActivityReportSessions)
 }
 
@@ -144,6 +144,17 @@ func (s *Server) buildActivityArtifacts(
 	probe activity.SourceProbe,
 	onProgress activity.ProgressFunc,
 ) (activity.CandidateArtifacts, error) {
+	build := func(buildCtx context.Context) (activity.CandidateArtifacts, error) {
+		return artifactStore.BuildActivityReportArtifacts(
+			buildCtx, selection.filter, selection.query, onProgress,
+		)
+	}
+	// Progress callbacks are bound to one HTTP response. Do not put them in a
+	// shared flight where the initiating client can disconnect while another
+	// waiter remains, leaving the shared build writing to a stale response.
+	if onProgress != nil {
+		return build(ctx)
+	}
 	keyPayload, err := json.Marshal(
 		newActivityReportTokenPayload(selection, "", probe),
 	)
@@ -153,13 +164,7 @@ func (s *Server) buildActivityArtifacts(
 	if s.activityReportFlights == nil {
 		s.activityReportFlights = newActivityReportBuildGroup()
 	}
-	return s.activityReportFlights.do(ctx, string(keyPayload), func(buildCtx context.Context) (
-		activity.CandidateArtifacts, error,
-	) {
-		return artifactStore.BuildActivityReportArtifacts(
-			buildCtx, selection.filter, selection.query, onProgress,
-		)
-	})
+	return s.activityReportFlights.do(ctx, string(keyPayload), build)
 }
 
 func (s *Server) prepareActivityReport(

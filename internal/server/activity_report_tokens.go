@@ -91,7 +91,7 @@ func (payload activityReportTokenPayload) selection() (resolvedActivitySelection
 	if err != nil {
 		return resolvedActivitySelection{}, fmt.Errorf("activity report token timezone: %w", err)
 	}
-	return resolvedActivitySelection{
+	selection := resolvedActivitySelection{
 		query: activity.Query{
 			Timezone: payload.Query.Timezone, Loc: location,
 			RangeStart: payload.Query.RangeStart, RangeEnd: payload.Query.RangeEnd,
@@ -109,7 +109,24 @@ func (payload activityReportTokenPayload) selection() (resolvedActivitySelection
 			ExcludeInteractive: payload.Filter.ExcludeInteractive,
 			Timezone:           payload.Filter.Timezone,
 		},
-	}, nil
+	}
+	if err := activity.ValidateResolvedQuery(selection.query); err != nil {
+		return resolvedActivitySelection{}, fmt.Errorf("invalid activity report token query: %w", err)
+	}
+	if selection.filter.Timezone != selection.query.Timezone {
+		return resolvedActivitySelection{}, fmt.Errorf("activity report token timezone mismatch")
+	}
+	if selection.filter.ExcludeAutomated && selection.filter.ExcludeInteractive {
+		return resolvedActivitySelection{}, fmt.Errorf("activity report token excludes all sessions")
+	}
+	if err := validateActivitySelectionSize(activitySelectionInput{
+		Timezone: selection.query.Timezone,
+		Project:  selection.filter.Project, GitBranch: selection.filter.GitBranch,
+		Agent: selection.filter.Agent, Machine: selection.filter.Machine,
+	}); err != nil {
+		return resolvedActivitySelection{}, fmt.Errorf("invalid activity report token filter: %w", err)
+	}
+	return selection, nil
 }
 
 func encodeActivityToken(tokenStore db.ActivityReportTokenStore, payload any) (string, error) {

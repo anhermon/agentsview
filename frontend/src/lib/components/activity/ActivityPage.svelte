@@ -60,14 +60,15 @@
     idx: number;
     label: string;
   } | null>(null);
-  let slotReportID = "";
+  let slotReportGeneration = -1;
 
-  // A reloaded report (range/filter change) gets fresh buckets and sessions, so
-  // a slot index/membership captured against the old report is stale; clear it.
+  // Every successful full-report load gets fresh buckets and sessions, even
+  // when its deterministic report_id is unchanged. Clear any slot membership
+  // captured against the previous generation.
   $effect(() => {
-    const reportID = activity.report?.report_id ?? "";
-    if (reportID !== slotReportID) {
-      slotReportID = reportID;
+    const generation = activity.reportGeneration;
+    if (generation !== slotReportGeneration) {
+      slotReportGeneration = generation;
       slotFilter = null;
     }
   });

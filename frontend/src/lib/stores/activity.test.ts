@@ -105,6 +105,7 @@ beforeEach(() => {
   api.getAgents.mockResolvedValue({ agents: [] });
   api.getMachines.mockResolvedValue({ machines: [] });
   activity.report = null;
+  activity.reportGeneration = 0;
   activity.loading = false;
   activity.error = null;
   activity.lastUpdatedAt = null;
@@ -133,6 +134,15 @@ afterEach(() => {
 });
 
 describe("load", () => {
+  it("advances the report generation when the same report ID reloads", async () => {
+    api.getActivityReport.mockResolvedValue(makeReport({ report_id: "stable-report" }));
+
+    await activity.load();
+    expect(activity.reportGeneration).toBe(1);
+    await activity.load();
+    expect(activity.reportGeneration).toBe(2);
+  });
+
   it("builds one query object covering the full report scope", async () => {
     activity.setCustomRange("2026-06-10", "2026-06-16");
     activity.setProject("source-project");

@@ -28,3 +28,14 @@ func TestActivityReportTokenRejectsImpracticalURLLength(t *testing.T) {
 	)
 	assert.ErrorIs(t, err, ErrInvalidActivityReportToken)
 }
+
+func TestActivityReportTokenRejectsEmptySigningSecret(t *testing.T) {
+	_, err := EncodeSignedActivityReportToken(nil, []byte(`{"query":"month"}`))
+	assert.ErrorIs(t, err, ErrInvalidActivityReportToken)
+
+	secret := bytes.Repeat([]byte{1}, 32)
+	token, err := EncodeSignedActivityReportToken(secret, []byte(`{"query":"month"}`))
+	require.NoError(t, err)
+	_, err = DecodeSignedActivityReportToken(nil, token)
+	assert.ErrorIs(t, err, ErrInvalidActivityReportToken)
+}

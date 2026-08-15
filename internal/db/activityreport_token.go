@@ -14,6 +14,9 @@ const MaxActivityReportTokenLength = 8 * 1024
 var ErrInvalidActivityReportToken = errors.New("invalid activity report token")
 
 func EncodeSignedActivityReportToken(secret, payload []byte) (string, error) {
+	if len(secret) == 0 {
+		return "", fmt.Errorf("%w: signing secret is empty", ErrInvalidActivityReportToken)
+	}
 	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
 	signed := "v1." + encodedPayload
 	mac := hmac.New(sha256.New, secret)
@@ -29,6 +32,9 @@ func EncodeSignedActivityReportToken(secret, payload []byte) (string, error) {
 }
 
 func DecodeSignedActivityReportToken(secret []byte, token string) ([]byte, error) {
+	if len(secret) == 0 {
+		return nil, fmt.Errorf("%w: signing secret is empty", ErrInvalidActivityReportToken)
+	}
 	if len(token) == 0 || len(token) > MaxActivityReportTokenLength {
 		return nil, fmt.Errorf("%w: invalid length", ErrInvalidActivityReportToken)
 	}

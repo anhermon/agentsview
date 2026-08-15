@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,7 +10,31 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/activity"
+	"go.kenn.io/agentsview/internal/db"
 )
+
+type progressArtifactStore struct {
+	started chan struct{}
+	release chan struct{}
+	builds  atomic.Int32
+}
+
+func (store *progressArtifactStore) BuildActivityReportArtifacts(
+	ctx context.Context,
+	_ db.AnalyticsFilter,
+	_ activity.Query,
+	onProgress activity.ProgressFunc,
+) (activity.CandidateArtifacts, error) {
+	call := store.builds.Add(1)
+	onProgress(activity.Progress{RowsProcessed: int64(call)})
+	store.started <- struct{}{}
+	select {
+	case <-store.release:
+		return activity.CandidateArtifacts{}, nil
+	case <-ctx.Done():
+		return activity.CandidateArtifacts{}, ctx.Err()
+	}
+}
 
 func TestActivityReportBuildGroupSharesBuildAfterOneWaiterCancels(t *testing.T) {
 	group := newActivityReportBuildGroup()
@@ -79,4 +104,51 @@ func TestActivityReportBuildGroupCancelsAbandonedBuild(t *testing.T) {
 	case <-time.After(time.Second):
 		require.FailNow(t, "abandoned build was not canceled")
 	}
+}
+
+func TestActivityReportProgressBuildsKeepCallbacksRequestLocal(t *testing.T) {
+	store := &progressArtifactStore{
+		started: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	srv := &Server{activityReportFlights: newActivityReportBuildGroup()}
+	var mu sync.Mutex
+	seen := map[string][]int64{"first": {}, "second": {}}
+	start := func(name string) <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			_, err := srv.buildActivityArtifacts(
+				context.Background(), store, resolvedActivitySelection{},
+				activity.SourceProbe{}, func(progress activity.Progress) {
+					mu.Lock()
+					seen[name] = append(seen[name], progress.RowsProcessed)
+					mu.Unlock()
+				},
+			)
+			done <- err
+		}()
+		return done
+	}
+
+	first := start("first")
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		require.FailNow(t, "first report build did not start")
+	}
+	second := start("second")
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		require.FailNow(t, "second progress request reused the first callback")
+	}
+	close(store.release)
+	require.NoError(t, <-first)
+	require.NoError(t, <-second)
+	require.Equal(t, int32(2), store.builds.Load())
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, seen["first"], 1)
+	require.Len(t, seen["second"], 1)
+	require.NotEqual(t, seen["first"][0], seen["second"][0])
 }
