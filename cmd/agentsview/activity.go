@@ -35,6 +35,7 @@ type ActivityReportConfig struct {
 	Offline           bool
 	ProgressWriter    io.Writer
 	SessionsLimit     int
+	SessionsReportID  string
 	SessionsCursor    string
 	SessionsSort      string
 	SessionsDirection string
@@ -149,7 +150,8 @@ func fetchHTTPActivityReport(
 }
 
 func activitySessionPageCustomized(cfg ActivityReportConfig) bool {
-	return cfg.SessionsCursor != "" || cfg.SessionsBucket != "" ||
+	return cfg.SessionsReportID != "" || cfg.SessionsCursor != "" ||
+		cfg.SessionsBucket != "" ||
 		cfg.SessionsLimit > 0 && cfg.SessionsLimit != activity.DefaultSessionPageLimit ||
 		cfg.SessionsSort != "" && cfg.SessionsSort != string(activity.SessionSortAgentMinutes) ||
 		cfg.SessionsDirection != "" && cfg.SessionsDirection != "desc"
@@ -162,7 +164,11 @@ func fetchHTTPActivitySessionPage(
 	cfg ActivityReportConfig,
 	report activity.Report,
 ) (activity.Report, error) {
-	if report.ReportID == "" {
+	reportID := report.ReportID
+	if cfg.SessionsReportID != "" {
+		reportID = cfg.SessionsReportID
+	}
+	if reportID == "" {
 		return activity.Report{}, fmt.Errorf(
 			"daemon does not support Activity session paging",
 		)
@@ -182,7 +188,7 @@ func fetchHTTPActivitySessionPage(
 		query.Set("bucket", strconv.Itoa(*options.Bucket))
 	}
 	endpoint := strings.TrimSuffix(tr.URL, "/") + "/api/v1/activity/report/" +
-		report.ReportID + "/sessions?" + query.Encode()
+		url.PathEscape(reportID) + "/sessions?" + query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return activity.Report{}, err
@@ -213,8 +219,13 @@ func fetchHTTPActivitySessionPage(
 	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
 		return activity.Report{}, err
 	}
-	if page.RefreshRequired && page.Report != nil {
+	if page.Report != nil {
 		return *page.Report, nil
+	}
+	if cfg.SessionsReportID != "" {
+		return activity.Report{}, fmt.Errorf(
+			"daemon did not return the requested Activity report generation",
+		)
 	}
 	report.BySession = page.Sessions
 	report.SessionsNextCursor = page.NextCursor

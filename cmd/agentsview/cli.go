@@ -600,6 +600,8 @@ func newActivityReportCommand() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.Machine, "machine", "", "Filter by machine name")
 	cmd.Flags().IntVar(&cfg.SessionsLimit, "sessions-limit", activity.DefaultSessionPageLimit,
 		"Session rows per page (maximum 500)")
+	cmd.Flags().StringVar(&cfg.SessionsReportID, "sessions-report-id", "",
+		"Report ID paired with --sessions-cursor in daemon mode")
 	cmd.Flags().StringVar(&cfg.SessionsCursor, "sessions-cursor", "",
 		"Continue from an Activity session page cursor")
 	cmd.Flags().StringVar(&cfg.SessionsSort, "sessions-sort", "agent_minutes",

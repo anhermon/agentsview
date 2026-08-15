@@ -66,8 +66,9 @@ func TestSQLiteActivityReportCandidatesMatchGoPairingAtScanBounds(t *testing.T) 
 		{SessionID: "edge", Ordinal: 2, Timestamp: "2026-06-15T23:59:30Z", Role: "assistant", Model: "old"},
 		{SessionID: "edge", Ordinal: 3, Timestamp: "2026-06-15T23:59:20Z", Role: "assistant", Model: "ignored"},
 		{SessionID: "edge", Ordinal: 4, Timestamp: "", Role: "user"},
-		{SessionID: "edge", Ordinal: 5, Timestamp: "2026-06-16T23:59:00Z", Role: "user"},
-		{SessionID: "edge", Ordinal: 6, Timestamp: "2026-06-17T00:20:00Z", Role: "assistant", Model: "new"},
+		{SessionID: "edge", Ordinal: 5, Timestamp: "not-a-timestamp", Role: "assistant", Model: "malformed"},
+		{SessionID: "edge", Ordinal: 6, Timestamp: "2026-06-16T23:59:00Z", Role: "user"},
+		{SessionID: "edge", Ordinal: 7, Timestamp: "2026-06-17T00:20:00Z", Role: "assistant", Model: "new"},
 	}
 	for _, event := range events {
 		seedMessage(t, d, event.SessionID, event.Ordinal, event.Role, event.Timestamp, event.Model)
@@ -83,13 +84,13 @@ func TestSQLiteActivityReportCandidatesMatchGoPairingAtScanBounds(t *testing.T) 
 	assert.Equal(t, want, got)
 }
 
-func TestSQLiteActivityReportCandidateQueryUsesSessionOrdinalIndex(t *testing.T) {
+func TestSQLiteActivityReportCandidateQueryUsesTimestampRangeIndex(t *testing.T) {
 	d := testDB(t)
 	q := dayQuery(t, "2026-06-16", "UTC")
 	rows, err := d.getReader().QueryContext(
 		context.Background(), "EXPLAIN QUERY PLAN "+activityReportCandidatesSQL,
-		`["session"]`, q.RangeStart.Add(-5*time.Minute).UnixMicro(),
-		q.EffectiveEnd.UnixMicro(),
+		`["session"]`, "2026-06-15T09:00:00Z", "2026-06-17T14:00:00Z",
+		q.RangeStart.Add(-5*time.Minute).UnixMicro(), q.EffectiveEnd.UnixMicro(),
 	)
 	require.NoError(t, err)
 	defer rows.Close()
@@ -102,7 +103,7 @@ func TestSQLiteActivityReportCandidateQueryUsesSessionOrdinalIndex(t *testing.T)
 	}
 	require.NoError(t, rows.Err())
 	plan := strings.Join(details, "\n")
-	assert.Contains(t, plan, "idx_messages_session_ordinal")
+	assert.Contains(t, plan, "idx_messages_activity_timestamp")
 	assert.NotContains(t, plan, "SCAN m")
 }
 
@@ -131,6 +132,27 @@ func TestSQLiteActivityReportCandidateSourceStopsOnCancellation(t *testing.T) {
 	})
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, seen)
+}
+
+func TestSQLiteActivityReportCandidateSourceSupportsLegacyDatabaseWithoutRangeIndex(
+	t *testing.T,
+) {
+	d := testDB(t)
+	_, err := d.getWriter().Exec(`DROP INDEX idx_messages_activity_timestamp`)
+	require.NoError(t, err)
+	insertSession(t, d, "legacy-index", "p", func(s *Session) {
+		s.StartedAt = Ptr("2026-06-16T10:00:00Z")
+		s.EndedAt = Ptr("2026-06-16T10:01:00Z")
+	})
+	seedMessage(t, d, "legacy-index", 0, "user", "2026-06-16T10:00:00Z", "")
+	seedMessage(t, d, "legacy-index", 1, "assistant", "2026-06-16T10:01:00Z", "model")
+
+	candidates, err := d.activityReportCandidates(
+		context.Background(), []string{"legacy-index"},
+		dayQuery(t, "2026-06-16", "UTC"),
+	)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
 }
 
 func BenchmarkSQLiteActivityReportCandidateSource100K(b *testing.B) {
@@ -179,22 +201,36 @@ func BenchmarkSQLiteActivityReportCandidateSourceLongSession(b *testing.B) {
 			CASE WHEN i % 2 = 0 THEN '' ELSE 'model' END
 		FROM n`, messageCount-1)
 	require.NoError(b, err)
-	q, err := activity.ResolveQuery(activity.QueryInput{
+	full, err := activity.ResolveQuery(activity.QueryInput{
 		Preset: "month", Date: "2026-07-01", Timezone: "UTC",
 	}, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	require.NoError(b, err)
-	source := d.activityReportCandidateSource([]string{"bench-long"}, q)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		count := 0
-		err := source(context.Background(), func(activity.IntervalCandidate) error {
-			count++
-			return nil
+	narrow, err := activity.ResolveQuery(activity.QueryInput{
+		Preset: "custom", Timezone: "UTC",
+		From: "2026-07-02T00:00:00Z", To: "2026-07-02T01:00:00Z",
+	}, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(b, err)
+	for _, benchmark := range []struct {
+		name string
+		q    activity.Query
+		want int
+	}{
+		{name: "full-100k", q: full, want: messageCount - 1},
+		{name: "narrow-3900", q: narrow, want: 3900},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			source := d.activityReportCandidateSource([]string{"bench-long"}, benchmark.q)
+			b.ReportAllocs()
+			for range b.N {
+				count := 0
+				err := source(context.Background(), func(activity.IntervalCandidate) error {
+					count++
+					return nil
+				})
+				require.NoError(b, err)
+				require.Equal(b, benchmark.want, count)
+			}
 		})
-		require.NoError(b, err)
-		require.Equal(b, messageCount-1, count)
 	}
 }
 

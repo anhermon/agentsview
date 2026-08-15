@@ -160,9 +160,11 @@ agentsview activity report --preset month --date 2026-07-01 --json \
 
 Large reports emit progress on stderr in both daemon and direct-database modes;
 JSON stdout remains one machine-readable document. Use `--sessions-cursor` with
-the returned `sessions_next_cursor` to request a later page. The same paging
-flags work with `--offline`; direct mode validates a signed cursor and
-deterministically recomputes the report before selecting that page.
+the returned `sessions_next_cursor` to request a later page. In daemon mode,
+also pass the paired `report_id` as `--sessions-report-id`; this preserves the
+original generation when a current or partial range advances between commands.
+The same paging flags work with `--offline`; direct mode validates a signed
+cursor and deterministically recomputes the report before selecting that page.
 
 See [CLI Reference](/commands/#agentsview-activity-report) and
 [Session API](/session-api/#activity-report) for flags and response shape.
@@ -201,6 +203,10 @@ changed, the response sets `refresh_required` and returns a complete replacement
 report and first page together, rather than mixing a new table with an old
 summary. Sync notifications continue to mark the dashboard stale and do not
 automatically reaggregate it.
+
+Each project, branch, agent, or machine filter is limited to 1,024 UTF-8 bytes,
+with a 3,072-byte combined limit. This leaves encoding headroom for the signed
+`report_id` in a URL path; oversized filters are rejected before aggregation.
 
 Older CLIs do not validate `schema_version` and can decode a v6 plain-JSON
 response. The embedded first page deliberately preserves the prior default

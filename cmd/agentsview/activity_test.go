@@ -40,7 +40,7 @@ func TestActivityReportCommand_Flags(t *testing.T) {
 		"preset", "date", "from", "to", "timezone",
 		"bucket", "project", "agent", "machine", "json", "no-sync",
 		"offline", "sessions-limit", "sessions-cursor", "sessions-sort",
-		"sessions-direction", "sessions-bucket",
+		"sessions-direction", "sessions-bucket", "sessions-report-id",
 	} {
 		assert.NotNilf(t, cmd.Flags().Lookup(name), "flag --%s must exist", name)
 	}
@@ -140,6 +140,45 @@ func TestActivityReport_UsesDiscoveredDaemon(t *testing.T) {
 	assert.Equal(t, "UTC", payload.Timezone)
 	assert.Equal(t, 3, payload.Totals.Sessions)
 	assert.NoFileExists(t, filepath.Join(dataDir, "sessions.db"))
+}
+
+func TestFetchHTTPActivityReportContinuesRequestedGeneration(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/activity/report", func(w http.ResponseWriter, _ *http.Request) {
+		require.NoError(t, json.NewEncoder(w).Encode(activity.Report{
+			ReportID: "fresh-report", Timezone: "UTC",
+		}))
+	})
+	mux.HandleFunc(
+		"/api/v1/activity/report/original-report/sessions",
+		func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "original-cursor", r.URL.Query().Get("cursor"))
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"report_id": "original-report",
+				"sessions":  []activity.SessionRow{{SessionID: "continued"}},
+				"total":     2,
+				"report": activity.Report{
+					ReportID: "original-report", Timezone: "UTC",
+					BySession:     []activity.SessionRow{{SessionID: "continued"}},
+					SessionsTotal: 2,
+				},
+			}))
+		},
+	)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	report, err := fetchHTTPActivityReport(
+		context.Background(), transport{URL: ts.URL}, "", ActivityReportConfig{
+			Preset: "day", Date: "2026-06-16", Timezone: "UTC",
+			SessionsReportID: "original-report",
+			SessionsCursor:   "original-cursor",
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "original-report", report.ReportID)
+	require.Len(t, report.BySession, 1)
+	assert.Equal(t, "continued", report.BySession[0].SessionID)
 }
 
 // mustLocation loads a named time zone, failing the test if it is unavailable.

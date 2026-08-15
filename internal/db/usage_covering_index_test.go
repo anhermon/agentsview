@@ -19,6 +19,7 @@ func TestUsageAndActivityIndexesMigration(t *testing.T) {
 
 	requireIndexPresence(t, path, "idx_messages_usage_covering", 1)
 	requireIndexPresence(t, path, "idx_messages_claude_snapshot", 1)
+	requireIndexPresence(t, path, "idx_messages_activity_timestamp", 1)
 	requireIndexPresence(t, path, "idx_messages_usage_timestamp", 0)
 
 	conn, err := sql.Open("sqlite3", path)
@@ -27,6 +28,8 @@ func TestUsageAndActivityIndexesMigration(t *testing.T) {
 	requireNoError(t, err, "drop covering index")
 	_, err = conn.Exec(`DROP INDEX IF EXISTS idx_messages_claude_snapshot`)
 	requireNoError(t, err, "drop Claude snapshot index")
+	_, err = conn.Exec(`DROP INDEX IF EXISTS idx_messages_activity_timestamp`)
+	requireNoError(t, err, "drop Activity timestamp index")
 	_, err = conn.Exec(`CREATE INDEX idx_messages_usage_timestamp
 		ON messages(timestamp, session_id, ordinal)
 		WHERE token_usage != '' AND model != '' AND model != '<synthetic>'`)
@@ -39,6 +42,7 @@ func TestUsageAndActivityIndexesMigration(t *testing.T) {
 
 	requireIndexPresence(t, path, "idx_messages_usage_covering", 1)
 	requireIndexPresence(t, path, "idx_messages_claude_snapshot", 1)
+	requireIndexPresence(t, path, "idx_messages_activity_timestamp", 1)
 	requireIndexPresence(t, path, "idx_messages_usage_timestamp", 0)
 
 	var sessions int

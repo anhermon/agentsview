@@ -910,6 +910,10 @@ route and are not subject to the ordinary 30-second operation timeout.
 | `machine` | Filter by machine |
 | `automation` | `all`, `interactive`, or `automated`; default `all` |
 
+Project, branch, agent, and machine filters are limited to 1,024 UTF-8 bytes
+each and 3,072 bytes combined so the signed report ID remains safe to transport
+in the session-page URL.
+
 Response excerpt:
 
 ```json

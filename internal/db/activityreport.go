@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"go.kenn.io/agentsview/internal/activity"
@@ -561,6 +562,7 @@ const activityReportCandidatesSQL = `SELECT
 			AND prior.model != ''
 			AND prior.timestamp IS NOT NULL
 			AND prior.timestamp != ''
+			AND agentsview_timestamp_unix_micro(prior.timestamp) IS NOT NULL
 			AND agentsview_timestamp_unix_micro(prior.timestamp) > (
 				SELECT agentsview_timestamp_unix_micro(prior_previous.timestamp)
 				FROM messages prior_previous
@@ -568,13 +570,15 @@ const activityReportCandidatesSQL = `SELECT
 					AND prior_previous.ordinal < prior.ordinal
 					AND prior_previous.timestamp IS NOT NULL
 					AND prior_previous.timestamp != ''
+					AND agentsview_timestamp_unix_micro(
+						prior_previous.timestamp) IS NOT NULL
 				ORDER BY prior_previous.ordinal DESC
 				LIMIT 1
 			)
 		ORDER BY prior.ordinal DESC
 		LIMIT 1
 	), 'unknown')
-FROM messages m
+FROM messages m INDEXED BY idx_messages_activity_timestamp
 JOIN messages successor ON successor.id = (
 	SELECT next.id
 	FROM messages next
@@ -582,16 +586,27 @@ JOIN messages successor ON successor.id = (
 		AND next.ordinal > m.ordinal
 		AND next.timestamp IS NOT NULL
 		AND next.timestamp != ''
+		AND agentsview_timestamp_unix_micro(next.timestamp) IS NOT NULL
 	ORDER BY next.ordinal
 	LIMIT 1
 )
 WHERE m.session_id IN (SELECT value FROM json_each(?))
 	AND m.timestamp IS NOT NULL
 	AND m.timestamp != ''
+	AND m.timestamp >= ?
+	AND m.timestamp < ?
+	AND agentsview_timestamp_unix_micro(m.timestamp) IS NOT NULL
 	AND agentsview_timestamp_unix_micro(m.timestamp) >= ?
 	AND agentsview_timestamp_unix_micro(m.timestamp) < ?
 ORDER BY agentsview_timestamp_unix_micro(m.timestamp),
 	m.session_id, m.ordinal`
+
+var activityReportCandidatesLegacySQL = strings.Replace(
+	activityReportCandidatesSQL,
+	"FROM messages m INDEXED BY idx_messages_activity_timestamp",
+	"FROM messages m",
+	1,
+)
 
 func (db *DB) activityReportCandidateSource(
 	ids []string, q activity.Query,
@@ -608,11 +623,23 @@ func (db *DB) activityReportCandidateSource(
 			return fmt.Errorf("encoding activity report session IDs: %w", err)
 		}
 		gapCap := time.Duration(q.GapCapSeconds) * time.Second
-		lower := q.RangeStart.Add(-gapCap).UTC().UnixMicro()
-		upper := q.EffectiveEnd.UTC().UnixMicro()
+		lowerTime := q.RangeStart.Add(-gapCap).UTC()
+		upperTime := q.EffectiveEnd.UTC()
+		lower := lowerTime.UnixMicro()
+		upper := upperTime.UnixMicro()
+		paddedLower := paddedUTCBound(lowerTime.Format(time.RFC3339), -14)
+		paddedUpper := paddedUTCBound(upperTime.Format(time.RFC3339), 14)
+		args := []any{string(encodedIDs), paddedLower, paddedUpper, lower, upper}
 		rows, err := db.getReader().QueryContext(
-			ctx, activityReportCandidatesSQL, string(encodedIDs), lower, upper,
+			ctx, activityReportCandidatesSQL, args...,
 		)
+		if err != nil && strings.Contains(
+			err.Error(), "no such index: idx_messages_activity_timestamp",
+		) {
+			rows, err = db.getReader().QueryContext(
+				ctx, activityReportCandidatesLegacySQL, args...,
+			)
+		}
 		if err != nil {
 			return fmt.Errorf("querying activity report candidates: %w", err)
 		}

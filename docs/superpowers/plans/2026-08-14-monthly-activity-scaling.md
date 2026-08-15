@@ -5,9 +5,9 @@
 > subagent-driven development. Keep the old aggregator available until the
 > differential gate passes.
 
-**Goal:** Make large Activity reports complete with bounded transport and
-message-independent retained aggregation memory, expose honest progress, and
-page session drill-down identically in the UI and CLI.
+**Goal:** Make large Activity reports complete with bounded transport and no
+retained object per adjacent message pair, expose honest progress, and page
+session drill-down identically in the UI and CLI.
 
 **Approved spec/design:**
 `docs/superpowers/specs/2026-08-14-monthly-activity-scaling-design.md`
@@ -30,8 +30,9 @@ route negotiates SSE progress or plain JSON.
   `internal/activity`.
 - Normalize calculation timestamps to microseconds in the shared aggregator.
 - Preserve the whole-second membership behavior in `activeSessions.ts`.
-- Never materialize all candidate intervals, messages, activity events, or usage
-  rows in the completed implementation.
+- Never materialize candidate intervals, messages, or activity events. Bound
+  usage candidates to the selected sessions/range and required snapshot peers;
+  exact unique-key dedup remains an explicitly documented linear working set.
 - Check `context.Context` in every long scan and aggregation loop.
 - Keep stdout machine-readable in CLI JSON mode; progress goes to stderr.
 - Make every new sort total by ending with session ID ascending.
@@ -191,7 +192,11 @@ ______________________________________________________________________
     lookup or an equivalent query shape. Do not apply the timestamp predicate to
     the same row set used by a window function to establish adjacency, and do
     not right-bound the successor lookup. Emit candidates ordered by start and
-    leave clipping, caps, rejection, and model semantics to `internal/activity`.
+    attach ordinal-derived prior-model context, and leave clipping, caps,
+    rejection, and closing-model selection to `internal/activity`. Add the
+    timestamp-first SQLite/PostgreSQL indexes used by the physical range scan;
+    SQLite applies a padded text-index prefilter followed by exact parsed
+    bounds.
 
 - [ ] **Step 5: Connect progress and context checks**
 
@@ -509,7 +514,8 @@ ______________________________________________________________________
 - [ ] **Step 4: Run focused frontend tests and verify RED**
 
     ```bash
-    pnpm --dir frontend test -- --run \
+    cd frontend
+    npm test -- --run \
       src/lib/stores/activity.test.ts \
       src/lib/components/activity/ActivityPage.test.ts \
       src/lib/components/activity/SessionsTable.test.ts
@@ -534,8 +540,9 @@ ______________________________________________________________________
 - [ ] **Step 8: Run frontend checks and verify GREEN**
 
     ```bash
-    pnpm --dir frontend test -- --run
-    pnpm --dir frontend check
+    cd frontend
+    npm test -- --run
+    npm run check
     ```
 
     Expected: PASS.
@@ -576,8 +583,9 @@ ______________________________________________________________________
     ```bash
     go test ./internal/activity ./internal/db ./internal/duckdb ./internal/server ./cmd/agentsview -count=1
     go test -tags=pgtest ./internal/postgres ./internal/activity -count=1
-    pnpm --dir frontend test -- --run
-    pnpm --dir frontend check
+    cd frontend
+    npm test -- --run
+    npm run check
     ```
 
 - [ ] **Step 5: Run repository-required Go verification**

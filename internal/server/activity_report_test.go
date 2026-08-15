@@ -545,11 +545,15 @@ func TestActivityReportEndpointNegotiatesProgressAndPagesSessions(t *testing.T) 
 		Sessions   []activity.SessionRow `json:"sessions"`
 		NextCursor string                `json:"next_cursor"`
 		Total      int                   `json:"total"`
+		Report     *activity.Report      `json:"report"`
 	}
 	require.NoError(t, json.Unmarshal(pageResponse.Body.Bytes(), &first))
 	require.Len(t, first.Sessions, 1)
 	require.NotEmpty(t, first.NextCursor)
 	assert.Equal(t, 2, first.Total)
+	require.NotNil(t, first.Report)
+	assert.Equal(t, report.ReportID, first.Report.ReportID)
+	assert.Equal(t, first.Sessions, first.Report.BySession)
 	secondResponse := te.get(t, "/api/v1/activity/report/"+report.ReportID+
 		"/sessions?limit=1&cursor="+url.QueryEscape(first.NextCursor))
 	assertStatus(t, secondResponse, http.StatusOK)

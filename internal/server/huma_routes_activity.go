@@ -15,6 +15,12 @@ import (
 	"go.kenn.io/agentsview/internal/export"
 )
 
+const (
+	activityReportFilterValueMaxBytes = 1024
+	activityReportFilterTotalMaxBytes = 3072
+	activityReportTimezoneMaxBytes    = 128
+)
+
 func (s *Server) registerActivityRoutes() {
 	group := newRouteGroup(s.api, "/api/v1/activity", "Activity")
 	stream(s, group, http.MethodGet, "/report", "Get activity report",
@@ -205,6 +211,9 @@ func resolveActivitySelection(
 	in activitySelectionInput,
 	now time.Time,
 ) (resolvedActivitySelection, error) {
+	if err := validateActivitySelectionSize(in); err != nil {
+		return resolvedActivitySelection{}, apiError(http.StatusBadRequest, err.Error())
+	}
 	tz := in.Timezone
 	if tz == "" {
 		tz = "UTC"
@@ -242,6 +251,35 @@ func resolveActivitySelection(
 		ExcludeInteractive: excludeInteractive,
 	}
 	return resolvedActivitySelection{query: q, filter: f}, nil
+}
+
+func validateActivitySelectionSize(in activitySelectionInput) error {
+	if len(in.Timezone) > activityReportTimezoneMaxBytes {
+		return fmt.Errorf("activity timezone exceeds %d bytes",
+			activityReportTimezoneMaxBytes)
+	}
+	values := []struct {
+		name  string
+		value string
+	}{
+		{"project", in.Project},
+		{"git_branch", in.GitBranch},
+		{"agent", in.Agent},
+		{"machine", in.Machine},
+	}
+	total := 0
+	for _, field := range values {
+		if len(field.value) > activityReportFilterValueMaxBytes {
+			return fmt.Errorf("activity %s filter exceeds %d bytes",
+				field.name, activityReportFilterValueMaxBytes)
+		}
+		total += len(field.value)
+	}
+	if total > activityReportFilterTotalMaxBytes {
+		return fmt.Errorf("activity filters exceed %d bytes total",
+			activityReportFilterTotalMaxBytes)
+	}
+	return nil
 }
 
 // activityAutomationFilter maps the activity report's automation query value to

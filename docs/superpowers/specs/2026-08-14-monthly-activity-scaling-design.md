@@ -2,10 +2,11 @@
 
 ## Goal
 
-Make large Activity reports finish without request timeouts or memory growth
-proportional to message count, while showing useful progress in the web UI and
-CLI and preserving the existing report semantics across SQLite, PostgreSQL, and
-DuckDB.
+Make large Activity reports finish without request timeouts, raw interval
+transport, or a retained object per adjacent message pair, while showing useful
+progress in the web UI and CLI and preserving the existing report semantics
+across SQLite, PostgreSQL, and DuckDB. The exact usage-dedup working-set limit
+is called out separately below.
 
 The concrete failure to remove is a month-sized report whose current request
 times out after 30 seconds and can materialize hundreds of megabytes of raw
@@ -33,10 +34,11 @@ interval JSON. The design must continue to work for archives with roughly
 
 ### Ordered candidate streams
 
-Each storage backend emits adjacent-message-pair candidates using a mechanical
-window query partitioned by session and ordered by message ordinal. The query
-also joins only the identifiers and timestamps needed by the shared aggregator.
-It does not implement Activity semantics.
+Each storage backend emits adjacent-message-pair candidates using mechanical
+ordinal successor lookups. The query joins only the identifiers, timestamps,
+closing role/model, and ordinal-derived prior-model context needed by the shared
+aggregator. It does not apply Activity range, cap, duration, or closing-model
+selection semantics.
 
 The candidate stream is ordered by candidate start time. Clipping the start to
 the report boundary preserves that order because `max(start, boundary)` is
@@ -82,6 +84,21 @@ model are also retained so closing-message model attribution remains shared and
 correct. Tests cover pairs straddling both pruning edges and ordinal sequences
 whose timestamps are not monotone.
 
+The prior-model context is also derived before candidate-start pruning by
+walking valid timestamped predecessors in ordinal order. This preserves the v5
+fallback even when the model-setting pair starts before the left scan bound or
+timestamps are not monotone; the shared aggregator still decides whether the
+closing assistant model or that context owns the interval.
+
+SQLite uses a timestamp-first partial index for the coarse physical scan. A
+14-hour text padding on each side covers every RFC3339 timezone offset and mixed
+whole/fractional-second representation; the registered timestamp parser then
+applies the exact instant bounds. PostgreSQL uses the equivalent timestamp-first
+partial index directly. Successor lookups remain backed by the session/ordinal
+index. A read-only legacy SQLite archive without the new index falls back to the
+correct session-indexed query until it is next opened writable and the
+idempotent index migration runs.
+
 ### Single-pass aggregation
 
 The shared aggregator consumes candidates chronologically and keeps only:
@@ -114,6 +131,15 @@ started in an earlier bucket.
 The usage stream performs survivor selection once and reuses the survivors for
 both totals and per-session allocation. Its two-tier deduplication and cost
 allocation remain identical to the Usage dashboard contract.
+
+This stage has an explicit limit: exact first-seen and complete-snapshot dedup
+retains the report-range candidate/survivor set, so its worst case remains
+linear in mostly unique usage rows. The implementation bounds that set to the
+selected sessions, padded report range, and required Claude snapshot peers and
+eliminates duplicate selection/allocation passes, but it does not claim a strict
+message-independent usage-memory bound. A future strict bound requires a
+key-ordered external spill/reduction design; it is separate from the raw
+interval and transport failure fixed here.
 
 The reporting-export caller in `internal/db/reporting_export.go` receives a
 slice-backed adapter for the streaming interface. It continues to consume only

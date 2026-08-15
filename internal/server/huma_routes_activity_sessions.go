@@ -154,9 +154,14 @@ func (s *Server) humaActivityReportSessions(
 			return nil, internalError("activity session cursor error", err)
 		}
 	}
+	pageReport := artifacts.Report
+	pageReport.ReportID = in.ReportID
+	pageReport.BySession = page.Sessions
+	pageReport.SessionsNextCursor = page.NextCursor
+	pageReport.SessionsTotal = page.Total
 	return &jsonOutput[activityReportSessionsResponse]{Body: activityReportSessionsResponse{
 		ReportID: in.ReportID, Sessions: page.Sessions,
-		NextCursor: page.NextCursor, Total: page.Total,
+		NextCursor: page.NextCursor, Total: page.Total, Report: &pageReport,
 	}}, nil
 }
 
