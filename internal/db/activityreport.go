@@ -64,17 +64,12 @@ func (db *DB) GetActivityReport(
 		return activity.Report{}, err
 	}
 
-	acts, err := db.activityReportActivity(ctx, ids)
-	if err != nil {
-		return activity.Report{}, err
-	}
-
 	usage, pricing, err := db.activityReportUsage(ctx, ids, lowerBound, upperBound, q)
 	if err != nil {
 		return activity.Report{}, err
 	}
 
-	report, err := activity.Aggregate(activity.Params{
+	report, err := activity.AggregateCandidateSource(ctx, activity.Params{
 		RangeStart:    q.RangeStart,
 		RangeEnd:      q.RangeEnd,
 		Loc:           q.Loc,
@@ -82,7 +77,7 @@ func (db *DB) GetActivityReport(
 		Partial:       q.Partial,
 		GapCapSeconds: q.GapCapSeconds,
 		Bucket:        q.Bucket,
-	}, sessions, acts, usage)
+	}, sessions, db.activityReportCandidateSource(ids, q), usage)
 	if err != nil {
 		return activity.Report{}, fmt.Errorf("aggregating activity report: %w", err)
 	}
@@ -426,15 +421,6 @@ func (db *DB) activityReportSessionsFrom(
 	return sessions, ids, nil
 }
 
-// activityReportActivity returns every timestamped message for the
-// candidate sessions, ordered for the aggregator's per-session
-// interval walk.
-func (db *DB) activityReportActivity(
-	ctx context.Context, ids []string,
-) ([]activity.ActivityEvent, error) {
-	return db.activityReportActivityFrom(ctx, db.getReader(), ids)
-}
-
 func (db *DB) activityReportActivityFrom(
 	ctx context.Context, q sessionExportQuerier, ids []string,
 ) ([]activity.ActivityEvent, error) {
@@ -492,6 +478,125 @@ func (db *DB) activityReportActivityFrom(
 		return a.Model < b.Model
 	})
 	return out, nil
+}
+
+// activityReportCandidates returns adjacent timestamped-message pairs whose
+// start can contribute to the report. The timestamp bound applies only to the
+// start row; the correlated successor lookup preserves true ordinal adjacency
+// and intentionally has no right timestamp bound.
+func (db *DB) activityReportCandidates(
+	ctx context.Context, ids []string, q activity.Query,
+) ([]activity.IntervalCandidate, error) {
+	var out []activity.IntervalCandidate
+	err := db.activityReportCandidateSource(ids, q)(
+		ctx, func(candidate activity.IntervalCandidate) error {
+			out = append(out, candidate)
+			return nil
+		},
+	)
+	return out, err
+}
+
+const activityReportCandidatesSQL = `SELECT
+	m.session_id, m.ordinal, successor.ordinal,
+	m.timestamp, successor.timestamp,
+	successor.role, successor.model,
+	COALESCE((
+		SELECT prior.model
+		FROM messages prior
+		WHERE prior.session_id = m.session_id
+			AND prior.ordinal <= m.ordinal
+			AND prior.role = 'assistant'
+			AND prior.model != ''
+			AND prior.timestamp IS NOT NULL
+			AND prior.timestamp != ''
+			AND agentsview_timestamp_unix_micro(prior.timestamp) > (
+				SELECT agentsview_timestamp_unix_micro(prior_previous.timestamp)
+				FROM messages prior_previous
+				WHERE prior_previous.session_id = prior.session_id
+					AND prior_previous.ordinal < prior.ordinal
+					AND prior_previous.timestamp IS NOT NULL
+					AND prior_previous.timestamp != ''
+				ORDER BY prior_previous.ordinal DESC
+				LIMIT 1
+			)
+		ORDER BY prior.ordinal DESC
+		LIMIT 1
+	), 'unknown')
+FROM messages m
+JOIN messages successor ON successor.id = (
+	SELECT next.id
+	FROM messages next
+	WHERE next.session_id = m.session_id
+		AND next.ordinal > m.ordinal
+		AND next.timestamp IS NOT NULL
+		AND next.timestamp != ''
+	ORDER BY next.ordinal
+	LIMIT 1
+)
+WHERE m.session_id IN (SELECT value FROM json_each(?))
+	AND m.timestamp IS NOT NULL
+	AND m.timestamp != ''
+	AND agentsview_timestamp_unix_micro(m.timestamp) >= ?
+	AND agentsview_timestamp_unix_micro(m.timestamp) < ?
+ORDER BY agentsview_timestamp_unix_micro(m.timestamp),
+	m.session_id, m.ordinal`
+
+func (db *DB) activityReportCandidateSource(
+	ids []string, q activity.Query,
+) activity.CandidateSource {
+	return func(
+		ctx context.Context,
+		yield func(activity.IntervalCandidate) error,
+	) error {
+		if len(ids) == 0 {
+			return nil
+		}
+		encodedIDs, err := json.Marshal(ids)
+		if err != nil {
+			return fmt.Errorf("encoding activity report session IDs: %w", err)
+		}
+		gapCap := time.Duration(q.GapCapSeconds) * time.Second
+		lower := q.RangeStart.Add(-gapCap).UTC().UnixMicro()
+		upper := q.EffectiveEnd.UTC().UnixMicro()
+		rows, err := db.getReader().QueryContext(
+			ctx, activityReportCandidatesSQL, string(encodedIDs), lower, upper,
+		)
+		if err != nil {
+			return fmt.Errorf("querying activity report candidates: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			var candidate activity.IntervalCandidate
+			var start, end string
+			if err := rows.Scan(
+				&candidate.SessionID, &candidate.StartOrdinal,
+				&candidate.EndOrdinal, &start, &end,
+				&candidate.ClosingRole, &candidate.ClosingModel,
+				&candidate.PriorModel,
+			); err != nil {
+				return fmt.Errorf("scanning activity report candidate: %w", err)
+			}
+			var err error
+			candidate.Start, err = time.Parse(time.RFC3339Nano, start)
+			if err != nil {
+				return fmt.Errorf("parsing activity candidate start: %w", err)
+			}
+			candidate.End, err = time.Parse(time.RFC3339Nano, end)
+			if err != nil {
+				return fmt.Errorf("parsing activity candidate end: %w", err)
+			}
+			candidate.Start = candidate.Start.UTC()
+			candidate.End = candidate.End.UTC()
+			if err := yield(candidate); err != nil {
+				return err
+			}
+		}
+		return rows.Err()
+	}
 }
 
 // activityReportUsage selects complete snapshots across the padded range,

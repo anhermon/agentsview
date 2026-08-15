@@ -56,17 +56,12 @@ func (s *Store) GetActivityReport(
 		return activity.Report{}, err
 	}
 
-	acts, err := s.activityReportActivity(ctx, ids)
-	if err != nil {
-		return activity.Report{}, err
-	}
-
 	usage, pricing, err := s.activityReportUsage(ctx, ids, lowerBound, upperBound, q)
 	if err != nil {
 		return activity.Report{}, err
 	}
 
-	report, err := activity.Aggregate(activity.Params{
+	report, err := activity.AggregateCandidateSource(ctx, activity.Params{
 		RangeStart:    q.RangeStart,
 		RangeEnd:      q.RangeEnd,
 		Loc:           q.Loc,
@@ -74,7 +69,7 @@ func (s *Store) GetActivityReport(
 		Partial:       q.Partial,
 		GapCapSeconds: q.GapCapSeconds,
 		Bucket:        q.Bucket,
-	}, sessions, acts, usage)
+	}, sessions, s.activityReportCandidateSource(ids, q), usage)
 	if err != nil {
 		return activity.Report{}, fmt.Errorf("aggregating pg activity report: %w", err)
 	}
@@ -410,53 +405,86 @@ func (s *Store) activityReportSessions(
 	return sessions, ids, nil
 }
 
-// activityReportActivity returns every timestamped message for the
-// candidate sessions, ordered for the aggregator's per-session
-// interval walk.
-func (s *Store) activityReportActivity(
-	ctx context.Context, ids []string,
-) ([]activity.ActivityEvent, error) {
-	var out []activity.ActivityEvent
-	if len(ids) == 0 {
-		return out, nil
-	}
-	err := pgQueryChunked(ids, func(chunk []string) error {
-		pb := &paramBuilder{}
-		ph := pgInPlaceholders(chunk, pb)
-		query := `SELECT session_id, ordinal, role, timestamp, model
-		FROM messages
-		WHERE session_id IN ` + ph + `
-			AND timestamp IS NOT NULL
-		ORDER BY session_id, ordinal`
-
-		rows, err := s.pg.QueryContext(ctx, query, pb.args...)
+func (s *Store) activityReportCandidateSource(
+	ids []string, q activity.Query,
+) activity.CandidateSource {
+	return func(
+		ctx context.Context,
+		yield func(activity.IntervalCandidate) error,
+	) error {
+		if len(ids) == 0 {
+			return nil
+		}
+		lower := q.RangeStart.Add(
+			-time.Duration(q.GapCapSeconds) * time.Second,
+		)
+		query := `SELECT
+			m.session_id, m.ordinal, successor.ordinal,
+			m.timestamp, successor.timestamp,
+			successor.role, successor.model,
+			COALESCE((
+				SELECT prior.model
+				FROM messages prior
+				WHERE prior.session_id = m.session_id
+					AND prior.ordinal <= m.ordinal
+					AND prior.role = 'assistant'
+					AND prior.model != ''
+					AND prior.timestamp IS NOT NULL
+					AND prior.timestamp > (
+						SELECT prior_previous.timestamp
+						FROM messages prior_previous
+						WHERE prior_previous.session_id = prior.session_id
+							AND prior_previous.ordinal < prior.ordinal
+							AND prior_previous.timestamp IS NOT NULL
+						ORDER BY prior_previous.ordinal DESC
+						LIMIT 1
+					)
+				ORDER BY prior.ordinal DESC
+				LIMIT 1
+			), 'unknown')
+		FROM messages m
+		JOIN messages successor
+			ON successor.session_id = m.session_id
+			AND successor.ordinal = (
+				SELECT next.ordinal
+				FROM messages next
+				WHERE next.session_id = m.session_id
+					AND next.ordinal > m.ordinal
+					AND next.timestamp IS NOT NULL
+				ORDER BY next.ordinal
+				LIMIT 1
+			)
+		WHERE m.session_id = ANY($1)
+			AND m.timestamp IS NOT NULL
+			AND m.timestamp >= $2
+			AND m.timestamp < $3
+		ORDER BY m.timestamp, m.session_id, m.ordinal`
+		rows, err := s.pg.QueryContext(ctx, query, ids, lower, q.EffectiveEnd)
 		if err != nil {
-			return fmt.Errorf(
-				"querying activity report activity: %w", err)
+			return fmt.Errorf("querying pg activity report candidates: %w", err)
 		}
 		defer rows.Close()
-
 		for rows.Next() {
-			var e activity.ActivityEvent
-			var ts sql.NullTime
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			var candidate activity.IntervalCandidate
 			if err := rows.Scan(
-				&e.SessionID, &e.Ordinal, &e.Role, &ts, &e.Model,
+				&candidate.SessionID, &candidate.StartOrdinal,
+				&candidate.EndOrdinal, &candidate.Start, &candidate.End,
+				&candidate.ClosingRole, &candidate.ClosingModel,
+				&candidate.PriorModel,
 			); err != nil {
-				return fmt.Errorf(
-					"scanning activity report activity: %w", err)
+				return fmt.Errorf("scanning pg activity report candidate: %w", err)
 			}
-			if !ts.Valid {
-				continue
+			candidate.Start = candidate.Start.UTC()
+			candidate.End = candidate.End.UTC()
+			if err := yield(candidate); err != nil {
+				return err
 			}
-			e.Timestamp = FormatISO8601(ts.Time)
-			out = append(out, e)
 		}
 		return rows.Err()
-	})
-	if err != nil {
-		return nil, err
 	}
-	return out, nil
 }
 
 // activityReportUsage selects complete snapshots across the padded range,

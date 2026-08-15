@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,106 @@ func seedMessage(
 		Timestamp: ts,
 		Model:     model,
 	})
+}
+
+func TestSQLiteActivityReportCandidatesMatchGoPairingAtScanBounds(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	insertSession(t, d, "edge", "p", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = Ptr("2026-06-15T23:54:59Z")
+		s.EndedAt = Ptr("2026-06-17T00:20:00Z")
+	})
+	events := []activity.ActivityEvent{
+		{SessionID: "edge", Ordinal: 1, Timestamp: "2026-06-15T23:54:59Z", Role: "user"},
+		{SessionID: "edge", Ordinal: 2, Timestamp: "2026-06-15T23:59:30Z", Role: "assistant", Model: "old"},
+		{SessionID: "edge", Ordinal: 3, Timestamp: "2026-06-15T23:59:20Z", Role: "assistant", Model: "ignored"},
+		{SessionID: "edge", Ordinal: 4, Timestamp: "", Role: "user"},
+		{SessionID: "edge", Ordinal: 5, Timestamp: "2026-06-16T23:59:00Z", Role: "user"},
+		{SessionID: "edge", Ordinal: 6, Timestamp: "2026-06-17T00:20:00Z", Role: "assistant", Model: "new"},
+	}
+	for _, event := range events {
+		seedMessage(t, d, event.SessionID, event.Ordinal, event.Role, event.Timestamp, event.Model)
+	}
+	q := dayQuery(t, "2026-06-16", "UTC")
+	want := activity.PairActivityEvents(
+		events, q.RangeStart, q.EffectiveEnd,
+		time.Duration(q.GapCapSeconds)*time.Second,
+	)
+
+	got, err := d.activityReportCandidates(ctx, []string{"edge"}, q)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestSQLiteActivityReportCandidateQueryUsesSessionOrdinalIndex(t *testing.T) {
+	d := testDB(t)
+	q := dayQuery(t, "2026-06-16", "UTC")
+	rows, err := d.getReader().QueryContext(
+		context.Background(), "EXPLAIN QUERY PLAN "+activityReportCandidatesSQL,
+		`["session"]`, q.RangeStart.Add(-5*time.Minute).UnixMicro(),
+		q.EffectiveEnd.UnixMicro(),
+	)
+	require.NoError(t, err)
+	defer rows.Close()
+	var details []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		require.NoError(t, rows.Scan(&id, &parent, &unused, &detail))
+		details = append(details, detail)
+	}
+	require.NoError(t, rows.Err())
+	plan := strings.Join(details, "\n")
+	assert.Contains(t, plan, "idx_messages_session_ordinal")
+	assert.NotContains(t, plan, "SCAN m")
+}
+
+func BenchmarkSQLiteActivityReportCandidateSource100K(b *testing.B) {
+	d := testDB(b)
+	const sessionCount = 100_000
+	_, err := d.getWriter().Exec(`
+		WITH RECURSIVE n(i) AS (
+			VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < ?
+		)
+		INSERT INTO sessions(id, project, started_at, ended_at)
+		SELECT printf('bench-%06d', i), 'bench',
+			'2026-07-01T10:00:00Z', '2026-07-28T10:02:00Z'
+		FROM n`, sessionCount)
+	require.NoError(b, err)
+	_, err = d.getWriter().Exec(`
+		WITH RECURSIVE n(i) AS (
+			VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < ?
+		)
+		INSERT INTO messages(session_id, ordinal, role, content, timestamp, model)
+		SELECT printf('bench-%06d', i), 1, 'user', 'x',
+			printf('2026-07-%02dT10:00:00Z', 1 + (i % 28)), ''
+		FROM n
+		UNION ALL
+		SELECT printf('bench-%06d', i), 2, 'assistant', 'x',
+			printf('2026-07-%02dT10:02:00Z', 1 + (i % 28)), 'model'
+		FROM n WHERE i % 10 != 0`, sessionCount)
+	require.NoError(b, err)
+	ids := make([]string, sessionCount)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("bench-%06d", i+1)
+	}
+	q, err := activity.ResolveQuery(activity.QueryInput{
+		Preset: "month", Date: "2026-07-01", Timezone: "UTC",
+	}, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(b, err)
+	source := d.activityReportCandidateSource(ids, q)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		count := 0
+		err := source(context.Background(), func(activity.IntervalCandidate) error {
+			count++
+			return nil
+		})
+		require.NoError(b, err)
+		require.Equal(b, 90_000, count)
+	}
 }
 
 func TestGetActivityReport_BasicConcurrency(t *testing.T) {

@@ -341,35 +341,17 @@ func Aggregate(
 	p Params, sessions []SessionMeta, activity []ActivityEvent, usage []UsageRow,
 ) (Report, error) {
 	gapCap := time.Duration(p.GapCapSeconds) * time.Second
+	intervals := buildIntervals(activity, gapCap, p.RangeStart, p.EffectiveEnd)
+	return aggregateWithIntervals(p, sessions, intervals, usage)
+}
+
+func aggregateWithIntervals(
+	p Params, sessions []SessionMeta, intervals []interval, usage []UsageRow,
+) (Report, error) {
 	startUTC, endUTC, effEnd := p.RangeStart, p.RangeEnd, p.EffectiveEnd
-	var asOf *string
-	if p.Partial {
-		s := effEnd.Format(time.RFC3339)
-		asOf = &s
-	}
-
 	windows := rangeWindows(p)
-	intervals := buildIntervals(activity, gapCap, startUTC, effEnd)
 	automatedBy := automatedSet(sessions)
-
-	r := Report{
-		Timezone:      paramsLoc(p).String(),
-		RangeStart:    startUTC.Format(time.RFC3339),
-		RangeEnd:      endUTC.Format(time.RFC3339),
-		BucketUnit:    string(p.Bucket.Unit),
-		BucketSeconds: p.Bucket.NominalSeconds,
-		Partial:       p.Partial,
-		AsOf:          asOf,
-		EffectiveEnd:  effEnd.Format(time.RFC3339),
-		Buckets:       []Bucket{},
-		ByProject:     []KeyMinutes{},
-		ByModel:       []KeyMinutes{},
-		ByAgent:       []KeyMinutes{},
-		BySession:     []SessionRow{},
-		Intervals:     []ReportInterval{},
-	}
-	r.BucketCount = len(windows)
-	r.ElapsedBucketCount = elapsedBucketCount(windows, effEnd)
+	r := newReport(p, windows)
 
 	buildBuckets(&r, windows, effEnd, intervals, automatedBy)
 	r.Peak, r.Totals.ActiveMinutes, _, _ = sweepLine(intervals, automatedBy)
@@ -393,6 +375,32 @@ func Aggregate(
 	}
 	r.Intervals = reportIntervals(intervals)
 	return r, nil
+}
+
+func newReport(p Params, windows []BucketWindow) Report {
+	var asOf *string
+	if p.Partial {
+		s := p.EffectiveEnd.Format(time.RFC3339)
+		asOf = &s
+	}
+	return Report{
+		Timezone:           paramsLoc(p).String(),
+		RangeStart:         p.RangeStart.Format(time.RFC3339),
+		RangeEnd:           p.RangeEnd.Format(time.RFC3339),
+		BucketUnit:         string(p.Bucket.Unit),
+		BucketSeconds:      p.Bucket.NominalSeconds,
+		BucketCount:        len(windows),
+		Partial:            p.Partial,
+		AsOf:               asOf,
+		EffectiveEnd:       p.EffectiveEnd.Format(time.RFC3339),
+		ElapsedBucketCount: elapsedBucketCount(windows, p.EffectiveEnd),
+		Buckets:            []Bucket{},
+		ByProject:          []KeyMinutes{},
+		ByModel:            []KeyMinutes{},
+		ByAgent:            []KeyMinutes{},
+		BySession:          []SessionRow{},
+		Intervals:          []ReportInterval{},
+	}
 }
 
 // paramsLoc returns the params timezone, defaulting nil to UTC.
@@ -690,6 +698,39 @@ type usageAgg struct {
 	models       map[string]money.Money // model -> cost (for primary/mixed)
 }
 
+type sessionIntervalAgg struct {
+	minutes       float64
+	modelMins     map[string]float64
+	modelDuration map[string]time.Duration
+	first, last   time.Time
+	hasIv         bool
+}
+
+func sessionAggregatesFromIntervals(ivs []interval) map[string]*sessionIntervalAgg {
+	agg := map[string]*sessionIntervalAgg{}
+	for _, iv := range ivs {
+		a := agg[iv.sessionID]
+		if a == nil {
+			a = &sessionIntervalAgg{
+				modelMins: map[string]float64{}, modelDuration: map[string]time.Duration{},
+			}
+			agg[iv.sessionID] = a
+		}
+		m := iv.end.Sub(iv.start).Minutes()
+		a.minutes += m
+		a.modelMins[iv.model] += m
+		a.modelDuration[iv.model] += iv.end.Sub(iv.start)
+		if !a.hasIv || iv.start.Before(a.first) {
+			a.first = iv.start
+		}
+		if !a.hasIv || iv.end.After(a.last) {
+			a.last = iv.end
+		}
+		a.hasIv = true
+	}
+	return agg
+}
+
 type usageDedupToken struct {
 	kind  string
 	value string
@@ -950,7 +991,15 @@ func dedupUsage(start, end, effEnd time.Time, usage []UsageRow) []UsageRow {
 // timestamp.
 func applyUsage(r *Report, p Params, windows []BucketWindow, start, end time.Time,
 	usage []UsageRow, automatedBy map[string]bool) error {
-	usage = dedupUsage(start, end, p.EffectiveEnd, usage)
+	return applyUsageRows(
+		r, windows, dedupUsage(start, end, p.EffectiveEnd, usage), automatedBy,
+	)
+}
+
+func applyUsageRows(
+	r *Report, windows []BucketWindow, usage []UsageRow,
+	automatedBy map[string]bool,
+) error {
 	allocated := AllocateUsageCosts(usage)
 	for i, u := range usage {
 		r.Totals.OutputTokens += u.OutputTokens
@@ -1016,6 +1065,26 @@ func windowIndex(windows []BucketWindow, t time.Time) int {
 // model, all sorted by minutes descending with empty/zero keys dropped.
 func buildSessionsTable(r *Report, start, end, effEnd time.Time,
 	sessions []SessionMeta, ivs []interval, usage []UsageRow) error {
+	return buildSessionsTableFromAggregates(
+		r, start, end, effEnd, sessions,
+		sessionAggregatesFromIntervals(ivs), usage,
+	)
+}
+
+func buildSessionsTableFromAggregates(
+	r *Report, start, end, effEnd time.Time,
+	sessions []SessionMeta, agg map[string]*sessionIntervalAgg,
+	usage []UsageRow,
+) error {
+	return buildSessionsTableFromDedupedUsage(
+		r, sessions, agg, dedupUsage(start, end, effEnd, usage),
+	)
+}
+
+func buildSessionsTableFromDedupedUsage(
+	r *Report, sessions []SessionMeta, agg map[string]*sessionIntervalAgg,
+	usage []UsageRow,
+) error {
 	// Sort sessions by ID so the cost and minute rollups below accumulate in
 	// one deterministic order. addKey sums float64 values across sessions and
 	// float addition is not associative, so the unspecified per-backend row
@@ -1025,34 +1094,8 @@ func buildSessionsTable(r *Report, start, end, effEnd time.Time,
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].SessionID < sessions[j].SessionID
 	})
-	// Per-session interval minutes + model minutes + active window.
-	type sAgg struct {
-		minutes     float64
-		modelMins   map[string]float64
-		first, last time.Time
-		hasIv       bool
-	}
-	agg := map[string]*sAgg{}
-	for _, iv := range ivs {
-		a := agg[iv.sessionID]
-		if a == nil {
-			a = &sAgg{modelMins: map[string]float64{}}
-			agg[iv.sessionID] = a
-		}
-		m := iv.end.Sub(iv.start).Minutes()
-		a.minutes += m
-		a.modelMins[iv.model] += m
-		if !a.hasIv || iv.start.Before(a.first) {
-			a.first = iv.start
-		}
-		if !a.hasIv || iv.end.After(a.last) {
-			a.last = iv.end
-		}
-		a.hasIv = true
-	}
 	// Per-session cost/tokens/models from deduped usage.
 	cost := map[string]*usageAgg{}
-	usage = dedupUsage(start, end, effEnd, usage)
 	allocated := AllocateUsageCosts(usage)
 	for i, u := range usage {
 		c := cost[u.SessionID]
@@ -1100,7 +1143,7 @@ func buildSessionsTable(r *Report, start, end, effEnd time.Time,
 			f := a.first.Format(time.RFC3339)
 			l := a.last.Format(time.RFC3339)
 			row.FirstActive, row.LastActive = &f, &l
-			row.PrimaryModel, row.Models = primaryAndModels(a.modelMins)
+			row.PrimaryModel, row.Models = primaryAndDurations(a.modelDuration)
 			if err := addKey(byProject, s.Project, mins, money.Money{}, au); err != nil {
 				return fmt.Errorf("summing activity project minutes: %w", err)
 			}
@@ -1230,22 +1273,20 @@ func minutesOf(s SessionRow) float64 {
 	return *s.AgentMinutes
 }
 
-// primaryAndModels returns the highest-weight model and the sorted set. When
-// no model carries positive weight (e.g. zero-cost or unpriced usage) it falls
-// back to the first model in sorted order, so a known-model session still
-// reports a primary; the primary is "" only when the set is empty. Caller
-// renders "mixed" when len>1.
-func primaryAndModels(w map[string]float64) (string, []string) {
+// primaryAndDurations returns the highest-duration model and sorted set.
+// Duration keeps primary-model ties deterministic across different stream
+// orders without relying on floating-point summation order.
+func primaryAndDurations(w map[string]time.Duration) (string, []string) {
 	var keys []string
 	primary := ""
-	var best float64
-	for k, v := range w {
-		if k == "" || k == "unknown" {
+	var best time.Duration
+	for key, duration := range w {
+		if key == "" || key == "unknown" {
 			continue
 		}
-		keys = append(keys, k)
-		if v > best {
-			best, primary = v, k
+		keys = append(keys, key)
+		if duration > best || duration == best && (primary == "" || key < primary) {
+			best, primary = duration, key
 		}
 	}
 	sort.Strings(keys)
