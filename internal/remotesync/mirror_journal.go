@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	mirrorJournalVersion            = 4
+	mirrorJournalVersion            = 5
 	mirrorJournalLegacyVersion      = 1
 	mirrorJournalForceIntentVersion = 2
 	mirrorJournalAttemptVersion     = 3
+	mirrorJournalCacheReadyVersion  = 4
 	mirrorJournalMaxEntries         = 8192
 	mirrorJournalMaxPathBytes       = 2 << 20
 )
@@ -60,14 +61,16 @@ type MirrorChangeEntry struct {
 }
 
 type MirrorChangeJournal struct {
-	Version               int                           `json:"version"`
-	FullImport            bool                          `json:"full_import,omitempty"`
-	FullImportReason      FullImportReason              `json:"full_import_reason,omitempty"`
-	InvalidateAll         bool                          `json:"invalidate_all,omitempty"`
-	ForceFullParseAll     bool                          `json:"force_full_parse_all,omitempty"`
-	DataRebuildCacheReady bool                          `json:"data_rebuild_cache_ready,omitempty"`
-	FileScopedDirs        map[parser.AgentType][]string `json:"file_scoped_dirs,omitempty"`
-	Entries               []MirrorChangeEntry           `json:"entries,omitempty"`
+	Version                     int                           `json:"version"`
+	FullImport                  bool                          `json:"full_import,omitempty"`
+	FullImportReason            FullImportReason              `json:"full_import_reason,omitempty"`
+	InvalidateAll               bool                          `json:"invalidate_all,omitempty"`
+	ForceFullParseAll           bool                          `json:"force_full_parse_all,omitempty"`
+	RequiredDataVersion         int                           `json:"required_data_version,omitempty"`
+	DataRebuildCacheVersion     int                           `json:"data_rebuild_cache_version,omitempty"`
+	LegacyDataRebuildCacheReady bool                          `json:"data_rebuild_cache_ready,omitempty"`
+	FileScopedDirs              map[parser.AgentType][]string `json:"file_scoped_dirs,omitempty"`
+	Entries                     []MirrorChangeEntry           `json:"entries,omitempty"`
 }
 
 type JournalMergeStats struct {
@@ -290,6 +293,7 @@ func loadMirrorChangeJournal(path string) (MirrorChangeJournal, error) {
 		)
 	}
 	if header.Version != mirrorJournalVersion &&
+		header.Version != mirrorJournalCacheReadyVersion &&
 		header.Version != mirrorJournalAttemptVersion &&
 		header.Version != mirrorJournalForceIntentVersion &&
 		header.Version != mirrorJournalLegacyVersion {
@@ -328,6 +332,10 @@ func loadMirrorChangeJournal(path string) (MirrorChangeJournal, error) {
 			journal.Entries[i].ForceFullParse = true
 		}
 	}
+	// Version 4's boolean did not identify the parser generation that created
+	// the attempt cache. Treat it as untrusted so the next automatic rebuild
+	// establishes a versioned cache boundary.
+	journal.LegacyDataRebuildCacheReady = false
 	journal.Version = mirrorJournalVersion
 	if err := validateMirrorChangeJournal(journal); err != nil {
 		return MirrorChangeJournal{}, fmt.Errorf(
@@ -355,6 +363,10 @@ func validateMirrorChangeJournal(journal MirrorChangeJournal) error {
 	}
 	if journal.FullImport {
 		switch journal.FullImportReason {
+		case "":
+			if journal.RequiredDataVersion == 0 {
+				return errors.New("full journal has no reason or required data version")
+			}
 		case FullImportExplicit, FullImportJournalOverflow,
 			FullImportJournalRecovery:
 		default:
@@ -368,6 +380,12 @@ func validateMirrorChangeJournal(journal MirrorChangeJournal) error {
 	} else if journal.FullImportReason != "" || journal.InvalidateAll ||
 		journal.ForceFullParseAll {
 		return errors.New("bounded journal has full-import state")
+	}
+	if journal.RequiredDataVersion < 0 || journal.DataRebuildCacheVersion < 0 {
+		return errors.New("journal data versions must not be negative")
+	}
+	if journal.DataRebuildCacheVersion != 0 && journal.RequiredDataVersion == 0 {
+		return errors.New("attempt cache version has no required data version")
 	}
 	fileScopedPathCount := 0
 	fileScopedPathBytes := 0

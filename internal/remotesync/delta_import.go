@@ -43,7 +43,7 @@ type DeltaImportRequest struct {
 	ForceParse               bool
 	ForceFullParseAfterCache bool
 	ResetAttemptCache        bool
-	MarkAttemptCacheReady    bool
+	AttemptCacheDataVersion  int
 }
 
 type CachePruneStats struct {
@@ -61,19 +61,20 @@ type PreparedDeltaImport struct {
 	DisarmedJournal MirrorChangeJournal
 	Stats           SyncStats
 
-	database       *db.DB
-	layout         importLayout
-	config         syncpkg.EngineConfig
-	plan           syncpkg.ChangedPathPlan
-	forceScope     syncpkg.ChangedPathPruneScope
-	cache          map[string]int64
-	remoteCache    map[string]int64
-	full           bool
-	forceParse     bool
-	forceFullParse bool
-	progress       syncpkg.ProgressFunc
-	save           func(*db.DB, *syncpkg.Engine, remotePathMap) error
-	apply          func(string, []string, map[string]int64) error
+	database            *db.DB
+	layout              importLayout
+	config              syncpkg.EngineConfig
+	plan                syncpkg.ChangedPathPlan
+	forceScope          syncpkg.ChangedPathPruneScope
+	cache               map[string]int64
+	remoteCache         map[string]int64
+	full                bool
+	forceParse          bool
+	forceFullParse      bool
+	requiredDataVersion int
+	progress            syncpkg.ProgressFunc
+	save                func(*db.DB, *syncpkg.Engine, remotePathMap) error
+	apply               func(string, []string, map[string]int64) error
 }
 
 func (im Importer) PreparePending(
@@ -203,20 +204,21 @@ func (im Importer) PreparePending(
 		preparedCache = nil
 	}
 	disarmedJournal := disarmMirrorChanges(request.Journal)
-	if request.MarkAttemptCacheReady {
-		disarmedJournal.DataRebuildCacheReady = true
+	if request.AttemptCacheDataVersion > 0 {
+		disarmedJournal.DataRebuildCacheVersion = request.AttemptCacheDataVersion
 	}
 	return &PreparedDeltaImport{
 		DisarmedJournal: disarmedJournal,
 		Stats:           stats,
 		database:        im.DB, layout: layout, config: config, plan: plan,
-		cache:          preparedCache,
-		remoteCache:    maps.Clone(pruned),
-		forceScope:     forceScope,
-		full:           full,
-		forceParse:     forceParse,
-		forceFullParse: forceFullParse,
-		progress:       im.Progress, save: im.saveSkipCache, apply: apply,
+		cache:               preparedCache,
+		remoteCache:         maps.Clone(pruned),
+		forceScope:          forceScope,
+		full:                full,
+		forceParse:          forceParse,
+		forceFullParse:      forceFullParse,
+		requiredDataVersion: request.Journal.RequiredDataVersion,
+		progress:            im.Progress, save: im.saveSkipCache, apply: apply,
 	}, nil
 }
 
@@ -293,10 +295,44 @@ func (pending *PreparedDeltaImport) Execute(
 			)
 		}
 	default:
+		if err := ctx.Err(); err != nil {
+			stats.JournalOutcome = JournalCancelled
+			processErr = err
+			break
+		}
+		versionPersistStart := time.Now()
+		if err := pending.persistImportDataVersion(
+			context.WithoutCancel(ctx), pending.database,
+		); err != nil {
+			stats.CachePersistDuration += time.Since(versionPersistStart)
+			stats.JournalOutcome = JournalCachePersistFailed
+			pending.Stats = stats
+			return stats, err
+		}
+		stats.CachePersistDuration += time.Since(versionPersistStart)
+		if err := ctx.Err(); err != nil {
+			stats.JournalOutcome = JournalCancelled
+			processErr = err
+			break
+		}
 		stats.JournalOutcome = JournalRetired
 	}
 	pending.Stats = stats
 	return stats, processErr
+}
+
+func (pending *PreparedDeltaImport) persistImportDataVersion(
+	ctx context.Context, database *db.DB,
+) error {
+	if pending.requiredDataVersion == 0 {
+		return nil
+	}
+	if err := database.SetRemoteImportDataVersion(
+		ctx, pending.layout.paths.host, pending.requiredDataVersion,
+	); err != nil {
+		return fmt.Errorf("persist remote import data version: %w", err)
+	}
+	return nil
 }
 
 func (pending *PreparedDeltaImport) persistSkipCache(

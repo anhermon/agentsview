@@ -239,6 +239,19 @@ func TestMirrorChangeJournalRoundTripAndAbsentUpgrade(t *testing.T) {
 			Path: "sessions/version-three.jsonl", ForceFullParse: true,
 		}},
 	}, upgraded)
+
+	versionFourPath := filepath.Join(t.TempDir(), "version-four.json")
+	require.NoError(t, os.WriteFile(versionFourPath, []byte(
+		`{"version":4,"full_import":true,"full_import_reason":"journal-recovery","force_full_parse_all":true,"data_rebuild_cache_ready":true}`,
+	), 0o600))
+	upgraded, err = loadMirrorChangeJournal(versionFourPath)
+	require.NoError(t, err)
+	assert.Equal(t, MirrorChangeJournal{
+		Version:           mirrorJournalVersion,
+		FullImport:        true,
+		FullImportReason:  FullImportJournalRecovery,
+		ForceFullParseAll: true,
+	}, upgraded)
 }
 
 func TestMirrorChangeJournalLoadErrorsAreTyped(t *testing.T) {

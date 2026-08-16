@@ -1087,6 +1087,38 @@ func TestHTTPMirrorJournalRetiresAfterActiveImport(t *testing.T) {
 	assert.NoFileExists(t, journalPath)
 }
 
+func TestHTTPUnchangedMirrorImportsIntoNewDatabaseGeneration(t *testing.T) {
+	remote := newMirrorTestRemote(t)
+	remote.writeSession(t, "session.jsonl",
+		time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC),
+		"generation refresh",
+	)
+	dataDir := t.TempDir()
+	database, hs := newMirrorSync(t, remote, dataDir)
+	first, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, first.SessionsSynced)
+
+	replacement, err := db.Open(filepath.Join(t.TempDir(), "replacement.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, replacement.Close()) })
+	require.NoError(t, replacement.CopySyncStateFrom(database.Path()))
+	require.NoError(t, replacement.CopySessionMetadataFrom(database.Path()))
+	hs.DB = replacement
+
+	second, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, FullImportDataRebuild, second.FullReason)
+	assert.Equal(t, 1, second.SessionsSynced,
+		"an unchanged mirror must populate a replacement database")
+	messages, err := replacement.GetMessages(
+		t.Context(), "devbox~session", 0, 10, true,
+	)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t, "generation refresh", messages[0].Content)
+}
+
 func TestHTTPMirrorJournalFlipFailureRetainsArmedWork(t *testing.T) {
 	remote := newMirrorTestRemote(t)
 	remotePath := remote.writeSession(t, "session.jsonl",
@@ -1576,6 +1608,63 @@ func TestHTTPSyncAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.False(t, stats.Aborted)
+	assert.Zero(t, stats.Failed)
+	assert.Zero(t, stats.Skipped)
+}
+
+func TestHTTPSyncAutomaticDataRebuildRejectsOlderAttemptCache(t *testing.T) {
+	remote := newMirrorTestRemote(t)
+	rowlessPath := filepath.Join(remote.dir, "cache-project", "rowless.jsonl")
+	rowlessBody := testjsonl.ClaudeUserJSON(
+		"<command-name>/usage</command-name>\n"+
+			"<command-message>usage</command-message>\n"+
+			"<command-args></command-args>",
+		"2026-08-14T10:00:00Z",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rowlessPath), 0o755))
+	require.NoError(t, os.WriteFile(rowlessPath, []byte(rowlessBody), 0o644))
+	mtime := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(rowlessPath, mtime, mtime))
+
+	database, hs := newMirrorSync(t, remote, t.TempDir())
+	_, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	cache, err := database.LoadRemoteSkippedFiles(hs.Host)
+	require.NoError(t, err)
+	require.NotEmpty(t, cache)
+
+	journalPath := mirrorJournalPath(MirrorDir(hs.DataDir, hs.Host))
+	require.NoError(t, replaceMirrorChangeJournal(
+		journalPath, MirrorChangeJournal{
+			Version:                 mirrorJournalVersion,
+			FullImport:              true,
+			FullImportReason:        FullImportJournalRecovery,
+			ForceFullParseAll:       true,
+			RequiredDataVersion:     db.CurrentDataVersion(),
+			DataRebuildCacheVersion: db.CurrentDataVersion() - 1,
+		},
+	))
+	seededJournal, err := loadMirrorChangeJournal(journalPath)
+	require.NoError(t, err)
+	require.False(t, seededJournal.InvalidateAll)
+	hs.Full = true
+	hs.FullReason = FullImportDataRebuild
+	prepared, err := hs.Prepare(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	contributor, err := prepared.RebuildContributor()
+	require.NoError(t, err)
+	assert.Empty(t, contributor.Config.InitialSkipCache,
+		"a parser upgrade must not trust an older rebuild attempt cache")
+
+	engine := syncpkg.NewEngine(database, syncpkg.EngineConfig{})
+	t.Cleanup(engine.Close)
+	stats, err := engine.ResyncAllWithOptions(
+		t.Context(), nil, syncpkg.RebuildOptions{
+			Contributors: []syncpkg.RebuildContributor{contributor},
+		},
+	)
+	require.NoError(t, err)
 	assert.Zero(t, stats.Failed)
 	assert.Zero(t, stats.Skipped)
 }

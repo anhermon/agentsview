@@ -463,6 +463,22 @@ func (p *PreparedHTTP) RebuildContributor() (syncpkg.RebuildContributor, error) 
 		}
 		return nil
 	}
+	persistSuccessfulImport := func(
+		engine *syncpkg.Engine, database *db.DB,
+	) error {
+		if err := persistSkipCache(engine, database); err != nil {
+			return err
+		}
+		if p.mirrorImport == nil {
+			return nil
+		}
+		if err := p.mirrorImport.pending.persistImportDataVersion(
+			context.Background(), database,
+		); err != nil {
+			return &rebuildCachePersistError{err: err}
+		}
+		return nil
+	}
 	forceParse := p.sync.forceParseRequested()
 	forceFullParseAfterCache := p.sync.forceFullParseAfterCacheRequested()
 	contributor := syncpkg.RebuildContributor{
@@ -473,7 +489,7 @@ func (p *PreparedHTTP) RebuildContributor() (syncpkg.RebuildContributor, error) 
 		Progress: func(progress syncpkg.Progress) syncpkg.Progress {
 			return transformHostProgress(p.sync.Host, progress)
 		},
-		AfterSync:    persistSkipCache,
+		AfterSync:    persistSuccessfulImport,
 		AfterFailure: persistSkipCache,
 	}
 	if p.mirrorImport != nil {
@@ -819,14 +835,38 @@ func (hs HTTPSync) prepareMirror(
 			return nil, err
 		}
 	}
+	currentDataVersion := db.CurrentDataVersion()
+	importedDataVersion, err := hs.DB.RemoteImportDataVersion(ctx, hs.Host)
+	if err != nil {
+		return nil, err
+	}
+	dataRebuildRequested := hs.forceFullParseAfterCacheRequested()
+	dataRebuildPending := importedDataVersion != currentDataVersion ||
+		dataRebuildRequested || journal.RequiredDataVersion != 0
+	if dataRebuildPending && journal.RequiredDataVersion != currentDataVersion {
+		if bootstrap && !dataRebuildRequested && !journal.FullImport {
+			journal.RequiredDataVersion = currentDataVersion
+			journal.DataRebuildCacheVersion = 0
+		} else {
+			journal = requireMirrorDataVersionImport(journal, currentDataVersion)
+		}
+	}
+	if journal.RequiredDataVersion != 0 && fullReason == "" {
+		fullReason = FullImportDataRebuild
+		if bootstrap {
+			fullReason = FullImportBootstrap
+		}
+	}
 	if fullReason == FullImportExplicit && !journal.FullImport {
 		journal = MirrorChangeJournal{
-			Version:           mirrorJournalVersion,
-			FullImport:        true,
-			FullImportReason:  FullImportExplicit,
-			InvalidateAll:     true,
-			ForceFullParseAll: true,
-			FileScopedDirs:    journal.FileScopedDirs,
+			Version:                 mirrorJournalVersion,
+			FullImport:              true,
+			FullImportReason:        FullImportExplicit,
+			InvalidateAll:           true,
+			ForceFullParseAll:       true,
+			RequiredDataVersion:     journal.RequiredDataVersion,
+			DataRebuildCacheVersion: journal.DataRebuildCacheVersion,
+			FileScopedDirs:          journal.FileScopedDirs,
 		}
 	}
 	if journal.FullImportReason != "" {
@@ -876,7 +916,11 @@ func (hs HTTPSync) prepareMirror(
 	hs.reportProgressDetail(fmt.Sprintf(
 		"Planning import from %s: %d pending paths", hs.Host, len(journal.Entries),
 	))
-	dataRebuild := hs.forceFullParseAfterCacheRequested()
+	dataRebuild := journal.RequiredDataVersion != 0
+	attemptCacheDataVersion := 0
+	if dataRebuild {
+		attemptCacheDataVersion = currentDataVersion
+	}
 	pending, err := (Importer{
 		Host: hs.Host, Full: hs.Full, DB: hs.DB,
 		BlockedResultCategories: hs.BlockedResultCategories,
@@ -887,8 +931,9 @@ func (hs HTTPSync) prepareMirror(
 		Journal: journal, FullReason: fullReason,
 		ForceParse:               hs.forceParseRequested(),
 		ForceFullParseAfterCache: dataRebuild,
-		ResetAttemptCache:        dataRebuild && !journal.DataRebuildCacheReady,
-		MarkAttemptCacheReady:    dataRebuild,
+		ResetAttemptCache: dataRebuild &&
+			journal.DataRebuildCacheVersion != currentDataVersion,
+		AttemptCacheDataVersion: attemptCacheDataVersion,
 	})
 	if err != nil {
 		return nil, err
@@ -914,4 +959,18 @@ func (hs HTTPSync) prepareMirror(
 		mergeStats: mergeStats, fullReason: fullReason,
 		outcome: JournalAbortedBeforeProcessing, pending: pending,
 	}, nil
+}
+
+func requireMirrorDataVersionImport(
+	journal MirrorChangeJournal, version int,
+) MirrorChangeJournal {
+	return MirrorChangeJournal{
+		Version:             mirrorJournalVersion,
+		FullImport:          true,
+		FullImportReason:    journal.FullImportReason,
+		InvalidateAll:       true,
+		ForceFullParseAll:   true,
+		RequiredDataVersion: version,
+		FileScopedDirs:      journal.FileScopedDirs,
+	}
 }
