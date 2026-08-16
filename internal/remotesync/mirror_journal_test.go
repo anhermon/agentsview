@@ -42,7 +42,7 @@ func TestMirrorChangeJournalMergeSetUnionAndRearm(t *testing.T) {
 		Version: mirrorJournalVersion,
 		Entries: []MirrorChangeEntry{
 			{Path: "a/session.jsonl"},
-			{Path: "b/session.jsonl", InvalidateCache: true},
+			{Path: "b/session.jsonl", InvalidateCache: true, ForceFullParse: true},
 		},
 	}
 
@@ -54,9 +54,9 @@ func TestMirrorChangeJournalMergeSetUnionAndRearm(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, JournalMergeStats{New: 1, Rearmed: 1, Replayed: 1}, stats)
 	assert.Equal(t, []MirrorChangeEntry{
-		{Path: "a/session.jsonl", InvalidateCache: true},
-		{Path: "b/session.jsonl", InvalidateCache: true},
-		{Path: "c/session.jsonl", InvalidateCache: true},
+		{Path: "a/session.jsonl", InvalidateCache: true, ForceFullParse: true},
+		{Path: "b/session.jsonl", InvalidateCache: true, ForceFullParse: true},
+		{Path: "c/session.jsonl", InvalidateCache: true, ForceFullParse: true},
 	}, merged.Entries)
 }
 
@@ -74,26 +74,31 @@ func TestMirrorChangeJournalBoundsAndDisarm(t *testing.T) {
 	overflow, _, err := mergeMirrorChanges(journal, []string{"sessions/overflow"})
 	require.NoError(t, err)
 	assert.Equal(t, MirrorChangeJournal{
-		Version:          mirrorJournalVersion,
-		FullImport:       true,
-		FullImportReason: FullImportJournalOverflow,
-		InvalidateAll:    true,
+		Version:           mirrorJournalVersion,
+		FullImport:        true,
+		FullImportReason:  FullImportJournalOverflow,
+		InvalidateAll:     true,
+		ForceFullParseAll: true,
 	}, overflow)
 
 	disarmed := disarmMirrorChanges(MirrorChangeJournal{
-		Version:          mirrorJournalVersion,
-		FullImport:       true,
-		FullImportReason: FullImportJournalRecovery,
-		InvalidateAll:    true,
+		Version:           mirrorJournalVersion,
+		FullImport:        true,
+		FullImportReason:  FullImportJournalRecovery,
+		InvalidateAll:     true,
+		ForceFullParseAll: true,
 		Entries: []MirrorChangeEntry{{
-			Path: "session.jsonl", InvalidateCache: true,
+			Path: "session.jsonl", InvalidateCache: true, ForceFullParse: true,
 		}},
 	})
 	assert.Equal(t, MirrorChangeJournal{
-		Version:          mirrorJournalVersion,
-		FullImport:       true,
-		FullImportReason: FullImportJournalRecovery,
-		Entries:          []MirrorChangeEntry{{Path: "session.jsonl"}},
+		Version:           mirrorJournalVersion,
+		FullImport:        true,
+		FullImportReason:  FullImportJournalRecovery,
+		ForceFullParseAll: true,
+		Entries: []MirrorChangeEntry{{
+			Path: "session.jsonl", ForceFullParse: true,
+		}},
 	}, disarmed)
 }
 
@@ -204,7 +209,22 @@ func TestMirrorChangeJournalRoundTripAndAbsentUpgrade(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, MirrorChangeJournal{
 		Version: mirrorJournalVersion,
-		Entries: []MirrorChangeEntry{{Path: "sessions/legacy.jsonl"}},
+		Entries: []MirrorChangeEntry{{
+			Path: "sessions/legacy.jsonl", ForceFullParse: true,
+		}},
+	}, upgraded)
+
+	versionTwoPath := filepath.Join(t.TempDir(), "version-two.json")
+	require.NoError(t, os.WriteFile(versionTwoPath, []byte(
+		`{"version":2,"entries":[{"path":"sessions/pending.jsonl"}]}`,
+	), 0o600))
+	upgraded, err = loadMirrorChangeJournal(versionTwoPath)
+	require.NoError(t, err)
+	assert.Equal(t, MirrorChangeJournal{
+		Version: mirrorJournalVersion,
+		Entries: []MirrorChangeEntry{{
+			Path: "sessions/pending.jsonl", ForceFullParse: true,
+		}},
 	}, upgraded)
 }
 

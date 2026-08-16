@@ -475,6 +475,8 @@ func (p *PreparedHTTP) RebuildContributor() (syncpkg.RebuildContributor, error) 
 	}
 	if p.mirrorImport != nil {
 		contributor.ForceParse = p.mirrorImport.pending.forceParse
+		contributor.ForceFullParseAfterCache =
+			p.mirrorImport.pending.forceFullParse
 		contributor.Config.InitialSkipCache = p.mirrorImport.pending.cache
 	}
 	if p.sync.Lifecycle != nil {
@@ -685,6 +687,7 @@ func (hs HTTPSync) prepareMirror(
 		journal = MirrorChangeJournal{
 			Version: mirrorJournalVersion, FullImport: true,
 			FullImportReason: FullImportJournalRecovery, InvalidateAll: true,
+			ForceFullParseAll: true,
 		}
 		if replaceErr := prepared.replaceJournal(journalPath, journal); replaceErr != nil {
 			return nil, fmt.Errorf("persist mirror journal recovery marker: %w", replaceErr)
@@ -770,12 +773,14 @@ func (hs HTTPSync) prepareMirror(
 	mutatesMirror := len(delta.Deletions) > 0 || len(delta.Fetch) > 0 ||
 		refreshFileScoped
 	observed := make([]string, 0, len(delta.Fetch)+len(delta.Deletions))
+	forceFullParseObserved := make([]string, 0, len(delta.Fetch))
 	for _, remotePath := range delta.Fetch {
 		path, normalizeErr := mirrorRelativeRemoteChangePath(mirrorRoot, remotePath)
 		if normalizeErr != nil {
 			return nil, normalizeErr
 		}
 		observed = append(observed, path)
+		forceFullParseObserved = append(forceFullParseObserved, path)
 	}
 	for _, localPath := range delta.Deletions {
 		path, normalizeErr := mirrorRelativeLocalChangePath(mirrorRoot, localPath)
@@ -787,9 +792,12 @@ func (hs HTTPSync) prepareMirror(
 	if refreshFileScoped {
 		for path := range fileScopedPaths {
 			observed = append(observed, path)
+			forceFullParseObserved = append(forceFullParseObserved, path)
 		}
 	}
-	journal, mergeStats, err := mergeMirrorChanges(journal, observed)
+	journal, mergeStats, err := mergeMirrorChangesWithForce(
+		journal, observed, forceFullParseObserved,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -810,11 +818,12 @@ func (hs HTTPSync) prepareMirror(
 	}
 	if fullReason == FullImportExplicit && !journal.FullImport {
 		journal = MirrorChangeJournal{
-			Version:          mirrorJournalVersion,
-			FullImport:       true,
-			FullImportReason: FullImportExplicit,
-			InvalidateAll:    true,
-			FileScopedDirs:   journal.FileScopedDirs,
+			Version:           mirrorJournalVersion,
+			FullImport:        true,
+			FullImportReason:  FullImportExplicit,
+			InvalidateAll:     true,
+			ForceFullParseAll: true,
+			FileScopedDirs:    journal.FileScopedDirs,
 		}
 	}
 	if journal.FullImportReason != "" {

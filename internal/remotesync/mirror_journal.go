@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	mirrorJournalVersion       = 2
-	mirrorJournalLegacyVersion = 1
-	mirrorJournalMaxEntries    = 8192
-	mirrorJournalMaxPathBytes  = 2 << 20
+	mirrorJournalVersion            = 3
+	mirrorJournalLegacyVersion      = 1
+	mirrorJournalForceIntentVersion = 2
+	mirrorJournalMaxEntries         = 8192
+	mirrorJournalMaxPathBytes       = 2 << 20
 )
 
 func (reason FullImportReason) Valid() bool {
@@ -54,15 +55,17 @@ const (
 type MirrorChangeEntry struct {
 	Path            string `json:"path"`
 	InvalidateCache bool   `json:"invalidate_cache,omitempty"`
+	ForceFullParse  bool   `json:"force_full_parse,omitempty"`
 }
 
 type MirrorChangeJournal struct {
-	Version          int                           `json:"version"`
-	FullImport       bool                          `json:"full_import,omitempty"`
-	FullImportReason FullImportReason              `json:"full_import_reason,omitempty"`
-	InvalidateAll    bool                          `json:"invalidate_all,omitempty"`
-	FileScopedDirs   map[parser.AgentType][]string `json:"file_scoped_dirs,omitempty"`
-	Entries          []MirrorChangeEntry           `json:"entries,omitempty"`
+	Version           int                           `json:"version"`
+	FullImport        bool                          `json:"full_import,omitempty"`
+	FullImportReason  FullImportReason              `json:"full_import_reason,omitempty"`
+	InvalidateAll     bool                          `json:"invalidate_all,omitempty"`
+	ForceFullParseAll bool                          `json:"force_full_parse_all,omitempty"`
+	FileScopedDirs    map[parser.AgentType][]string `json:"file_scoped_dirs,omitempty"`
+	Entries           []MirrorChangeEntry           `json:"entries,omitempty"`
 }
 
 type JournalMergeStats struct {
@@ -122,6 +125,14 @@ func mergeMirrorChanges(
 	journal MirrorChangeJournal,
 	observedPaths []string,
 ) (MirrorChangeJournal, JournalMergeStats, error) {
+	return mergeMirrorChangesWithForce(journal, observedPaths, observedPaths)
+}
+
+func mergeMirrorChangesWithForce(
+	journal MirrorChangeJournal,
+	observedPaths []string,
+	forceFullParsePaths []string,
+) (MirrorChangeJournal, JournalMergeStats, error) {
 	if err := validateMirrorChangeJournal(journal); err != nil {
 		return MirrorChangeJournal{}, JournalMergeStats{}, err
 	}
@@ -144,10 +155,26 @@ func mergeMirrorChanges(
 		}
 		observed[path] = struct{}{}
 	}
+	forceFullParse := make(map[string]struct{}, len(forceFullParsePaths))
+	for _, value := range forceFullParsePaths {
+		path, err := normalizeMirrorJournalPath(value)
+		if err != nil {
+			return MirrorChangeJournal{}, JournalMergeStats{}, err
+		}
+		if _, ok := observed[path]; !ok {
+			return MirrorChangeJournal{}, JournalMergeStats{}, fmt.Errorf(
+				"force-full-parse path %q was not observed", value,
+			)
+		}
+		forceFullParse[path] = struct{}{}
+	}
 
 	if journal.FullImport {
 		if len(observed) > 0 {
 			journal.InvalidateAll = true
+			if len(forceFullParse) > 0 {
+				journal.ForceFullParseAll = true
+			}
 		}
 		return journal, JournalMergeStats{Rearmed: len(observed)}, nil
 	}
@@ -166,6 +193,7 @@ func mergeMirrorChanges(
 		}
 		entry.Path = path
 		entry.InvalidateCache = true
+		_, entry.ForceFullParse = forceFullParse[path]
 		entries[path] = entry
 	}
 	for _, entry := range journal.Entries {
@@ -196,10 +224,11 @@ func mergeMirrorChanges(
 
 func overflowMirrorChangeJournal() MirrorChangeJournal {
 	return MirrorChangeJournal{
-		Version:          mirrorJournalVersion,
-		FullImport:       true,
-		FullImportReason: FullImportJournalOverflow,
-		InvalidateAll:    true,
+		Version:           mirrorJournalVersion,
+		FullImport:        true,
+		FullImportReason:  FullImportJournalOverflow,
+		InvalidateAll:     true,
+		ForceFullParseAll: true,
 	}
 }
 
@@ -259,6 +288,7 @@ func loadMirrorChangeJournal(path string) (MirrorChangeJournal, error) {
 		)
 	}
 	if header.Version != mirrorJournalVersion &&
+		header.Version != mirrorJournalForceIntentVersion &&
 		header.Version != mirrorJournalLegacyVersion {
 		return MirrorChangeJournal{}, fmt.Errorf(
 			"%w: version %d", ErrUnsupportedMirrorJournal, header.Version,
@@ -285,7 +315,16 @@ func loadMirrorChangeJournal(path string) (MirrorChangeJournal, error) {
 				ErrMalformedMirrorJournal, path,
 			)
 		}
+	}
+	if journal.Version == mirrorJournalLegacyVersion ||
+		journal.Version == mirrorJournalForceIntentVersion {
 		journal.Version = mirrorJournalVersion
+		if journal.FullImport {
+			journal.ForceFullParseAll = true
+		}
+		for i := range journal.Entries {
+			journal.Entries[i].ForceFullParse = true
+		}
 	}
 	if err := validateMirrorChangeJournal(journal); err != nil {
 		return MirrorChangeJournal{}, fmt.Errorf(
@@ -323,7 +362,8 @@ func validateMirrorChangeJournal(journal MirrorChangeJournal) error {
 		if len(journal.Entries) != 0 {
 			return errors.New("full journal must not contain path entries")
 		}
-	} else if journal.FullImportReason != "" || journal.InvalidateAll {
+	} else if journal.FullImportReason != "" || journal.InvalidateAll ||
+		journal.ForceFullParseAll {
 		return errors.New("bounded journal has full-import state")
 	}
 	fileScopedPathCount := 0

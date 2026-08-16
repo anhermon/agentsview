@@ -1273,8 +1273,9 @@ func TestHTTPExplicitFullCancellationRetainsScopeForOrdinarySync(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, FullImportExplicit, retried.FullReason)
 	assert.Equal(t, 1, retried.SessionsTotal)
-	assert.Equal(t, 1, retried.Skipped,
-		"ordinary replay retains full scope without restoring force-parse intent")
+	assert.Equal(t, 1, retried.SessionsSynced)
+	assert.Zero(t, retried.Skipped,
+		"a source not reached before cancellation still requires a full parse")
 	assert.NoFileExists(t, journalPath)
 }
 
@@ -1435,10 +1436,11 @@ func TestHTTPDisarmedExplicitFullReplayUsesPersistedSkip(t *testing.T) {
 
 	journalPath := mirrorJournalPath(MirrorDir(dataDir, hs.Host))
 	require.NoError(t, replaceMirrorChangeJournal(journalPath, MirrorChangeJournal{
-		Version:          mirrorJournalVersion,
-		FullImport:       true,
-		FullImportReason: FullImportExplicit,
-		InvalidateAll:    false,
+		Version:           mirrorJournalVersion,
+		FullImport:        true,
+		FullImportReason:  FullImportExplicit,
+		InvalidateAll:     false,
+		ForceFullParseAll: true,
 	}))
 
 	replayed, err := hs.Run(t.Context())
@@ -3835,6 +3837,61 @@ func TestHTTPMirrorSameMtimeGrowingRewriteFullParses(t *testing.T) {
 		"replacement with a deliberately larger body",
 		messages[0].Content,
 	)
+}
+
+func TestHTTPMirrorInterruptedGrowingRewriteRetainsFullParse(t *testing.T) {
+	for _, mode := range []string{"active import", "rebuild before contributor"} {
+		t.Run(mode, func(t *testing.T) {
+			remote := newMirrorTestRemote(t)
+			mtime := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+			remote.writeSession(t, "interrupted-rewrite.jsonl", mtime, "old")
+			dataDir := t.TempDir()
+			database, hs := newMirrorSync(t, remote, dataDir)
+			_, err := hs.Run(t.Context())
+			require.NoError(t, err)
+
+			remote.writeSession(
+				t, "interrupted-rewrite.jsonl", mtime,
+				"replacement with a deliberately larger body",
+			)
+			prepared, err := hs.Prepare(t.Context())
+			require.NoError(t, err)
+			cancelled, cancel := context.WithCancel(t.Context())
+			cancel()
+			switch mode {
+			case "active import":
+				_, err = prepared.ImportActive(cancelled)
+			case "rebuild before contributor":
+				contributor, contributorErr := prepared.RebuildContributor()
+				require.NoError(t, contributorErr)
+				local := syncpkg.NewEngine(database, syncpkg.EngineConfig{})
+				t.Cleanup(local.Close)
+				_, err = local.ResyncAllWithOptions(
+					cancelled, nil, syncpkg.RebuildOptions{
+						Contributors: []syncpkg.RebuildContributor{contributor},
+					},
+				)
+			default:
+				t.Fatalf("unknown interruption mode %q", mode)
+			}
+			require.ErrorIs(t, err, context.Canceled)
+			require.NoError(t, prepared.Close())
+
+			retried, err := hs.Run(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, 1, retried.SessionsSynced)
+			assert.Zero(t, retried.Skipped)
+			messages, err := database.GetMessages(
+				t.Context(), "devbox~interrupted-rewrite", 0, 10, true,
+			)
+			require.NoError(t, err)
+			require.Len(t, messages, 1)
+			assert.Equal(t,
+				"replacement with a deliberately larger body",
+				messages[0].Content,
+			)
+		})
+	}
 }
 
 func tarWithoutEndMarker(t *testing.T, name, body string) []byte {

@@ -26,6 +26,10 @@ type RebuildContributor struct {
 	// explicit-full imports use this to preserve their parsing contract while
 	// participating in a unified replacement-database rebuild.
 	ForceParse bool
+	// ForceFullParseAfterCache preserves full-source parsing for work not
+	// reached by an interrupted remote attempt while allowing its durable
+	// failure-cache entries to suppress sources that were already attempted.
+	ForceFullParseAfterCache bool
 
 	Progress  func(Progress) Progress
 	Started   func()

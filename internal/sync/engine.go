@@ -553,6 +553,11 @@ type Engine struct {
 	// also marks files ForceParse, but provider-specific paths must still bypass
 	// every freshness gate if that per-file bit is not carried forward.
 	forceFullParse bool
+	// forceFullParseAllowsCache retains the complete-parse requirement while
+	// allowing a durable error-skip entry to prove that a source was already
+	// attempted. Remote journal replay uses this after cache invalidation was
+	// durably consumed.
+	forceFullParseAllowsCache bool
 
 	// phaseStats accumulates per-phase wall-clock time inside the bulk
 	// write path. Exposed via PhaseStats() so a CLI driver can log the
@@ -613,13 +618,18 @@ type Engine struct {
 	reconciliationSpoolFactory func(string) (reconciliationSpoolStore, error)
 }
 
-// forceParseRequested centralizes the parse modes that must bypass every
-// source freshness gate and preserve every parsed result. forceFullParse is
-// engine-scoped because some provider paths do not retain the discovered
-// file's ForceParse bit through their full processing pipeline.
+// forceParseRequested centralizes the parse modes that require complete source
+// processing and preserve every parsed result. The separate cache predicate
+// lets remote replay suppress sources whose post-invalidation attempt is
+// already durable.
 func (e *Engine) forceParseRequested(file parser.DiscoveredFile) bool {
 	return e.forceParse || e.forceFullParse || file.ForceParse ||
 		file.ForceFullParse
+}
+
+func (e *Engine) forceParseBypassesCache(file parser.DiscoveredFile) bool {
+	return e.forceParse || file.ForceParse ||
+		(e.forceFullParse && !e.forceFullParseAllowsCache)
 }
 
 // ReconciliationResult is the structured acknowledgement for the most recent
@@ -2897,7 +2907,10 @@ func (e *Engine) resyncBuildLocked(
 		contributorEngine := NewEngine(newDB, contributor.Config)
 		contributorEngine.archiveStore = origDB
 		contributorEngine.archiveStaleClaudeForks = archiveStaleForks
-		contributorEngine.forceFullParse = contributor.ForceParse
+		contributorEngine.forceFullParse = contributor.ForceParse ||
+			contributor.ForceFullParseAfterCache
+		contributorEngine.forceFullParseAllowsCache =
+			contributor.ForceFullParseAfterCache && !contributor.ForceParse
 		contributorProgress := func(p Progress) {
 			if contributor.Progress != nil {
 				p = contributor.Progress(p)
@@ -4176,7 +4189,7 @@ func (e *Engine) ApplyWorktreeProjectMappings(
 func (e *Engine) SyncAll(
 	ctx context.Context, onProgress ProgressFunc,
 ) (stats SyncStats) {
-	return e.syncAll(ctx, onProgress, false)
+	return e.syncAll(ctx, onProgress, false, false)
 }
 
 // SyncAllForceParse discovers all session files and forces each source through
@@ -4184,18 +4197,34 @@ func (e *Engine) SyncAll(
 func (e *Engine) SyncAllForceParse(
 	ctx context.Context, onProgress ProgressFunc,
 ) (stats SyncStats) {
-	return e.syncAll(ctx, onProgress, true)
+	return e.syncAll(ctx, onProgress, true, false)
+}
+
+// SyncAllForceParseAfterCache requires a complete parse for each source that
+// does not have a durable skip-cache entry. It is the replay form of a remote
+// full import: sources not reached by an interrupted attempt still parse in
+// full, while deterministic failures already recorded by that attempt remain
+// suppressed.
+func (e *Engine) SyncAllForceParseAfterCache(
+	ctx context.Context, onProgress ProgressFunc,
+) (stats SyncStats) {
+	return e.syncAll(ctx, onProgress, true, true)
 }
 
 func (e *Engine) syncAll(
-	ctx context.Context, onProgress ProgressFunc, forceDiscoveredFiles bool,
+	ctx context.Context,
+	onProgress ProgressFunc,
+	forceFullParse bool,
+	allowCachedFailures bool,
 ) (stats SyncStats) {
 	if e.refuseWriteInForceParse("SyncAll") {
 		return SyncStats{}
 	}
 	e.syncMu.Lock()
 	previousForceFullParse := e.forceFullParse
-	e.forceFullParse = forceDiscoveredFiles
+	previousForceFullParseAllowsCache := e.forceFullParseAllowsCache
+	e.forceFullParse = forceFullParse
+	e.forceFullParseAllowsCache = allowCachedFailures
 	defer e.notifyStartupReconciled()
 	// Defers run LIFO: Unlock runs before the emit closure so
 	// Emitter implementations cannot widen the syncMu critical
@@ -4206,12 +4235,15 @@ func (e *Engine) syncAll(
 		}
 	}()
 	defer e.syncMu.Unlock()
-	defer func() { e.forceFullParse = previousForceFullParse }()
+	defer func() {
+		e.forceFullParse = previousForceFullParse
+		e.forceFullParseAllowsCache = previousForceFullParseAllowsCache
+	}()
 	defer e.clearCurrentProgress()
 	defer func() { e.recordStartupReconciled(ctx, stats, ctx.Err()) }()
 	stats = e.syncAllLocked(
 		ctx, onProgress, time.Time{}, nil, syncWriteDefault, true,
-		forceDiscoveredFiles,
+		forceFullParse && !allowCachedFailures,
 	)
 	return
 }
@@ -9553,7 +9585,7 @@ func (e *Engine) processFile(
 
 	// Skip files cached from a previous sync whose mtime and source
 	// fingerprint are unchanged.
-	if cacheSkip && !e.forceParseRequested(file) {
+	if cacheSkip && !e.forceParseBypassesCache(file) {
 		if e.shouldUseCachedSkip(file, mtime, sourceFingerprint) {
 			if e.pathNeedsCachedSkipBypass(file.Agent, file.Path) {
 				e.clearSkip(file.Path)
@@ -9708,7 +9740,7 @@ func (e *Engine) processProviderFile(
 		// legacy deleted-source handling: complete the source as an empty
 		// force-replace so the engine retires every session that lived in the
 		// removed database instead of failing the sync.
-		if file.ForceParse &&
+		if (file.ForceParse || file.ForceFullParse) &&
 			providerDeletedPhysicalSQLiteSource(file.Agent, file.Path) {
 			return processResult{forceReplace: true}, true
 		}
@@ -9866,7 +9898,7 @@ func (e *Engine) processProviderFile(
 
 	fingerprint, err := provider.Fingerprint(ctx, source)
 	if err != nil {
-		if file.ForceParse &&
+		if (file.ForceParse || file.ForceFullParse) &&
 			providerDeletedPhysicalSQLiteSource(file.Agent, file.Path) &&
 			errors.Is(err, os.ErrNotExist) {
 			excludedSessionIDs, ownershipErr :=
@@ -9890,7 +9922,7 @@ func (e *Engine) processProviderFile(
 		file, source, fingerprint, providerSemantics,
 	)
 	cacheSkip := e.shouldCacheSkip(file)
-	if cacheSkip && !e.forceParseRequested(file) {
+	if cacheSkip && !e.forceParseBypassesCache(file) {
 		e.skipMu.RLock()
 		cachedMtime, cached := e.skipCache[cacheKey]
 		e.skipMu.RUnlock()
@@ -10181,8 +10213,8 @@ func (e *Engine) processProviderFile(
 			providerFailureCount:     providerFailureCount,
 			providerWideFailureCount: providerWideFailureCount,
 		}
-		if file.Agent == parser.AgentClaude && cleanCache && !e.forceParse &&
-			!file.ForceParse {
+		if file.Agent == parser.AgentClaude && cleanCache &&
+			!e.forceParseRequested(file) {
 			skipRes.claudeRowlessFreshnessKey =
 				e.claudeRowlessFreshnessCacheKey(file.Path, fingerprint.Hash)
 		}
@@ -10284,8 +10316,8 @@ func (e *Engine) processProviderFile(
 		}
 	}
 	e.applyProviderFilePathPolicies(ctx, provider, file.Agent, file.Path, &res)
-	if file.Agent == parser.AgentClaude && cleanCache && !e.forceParse &&
-		!file.ForceParse {
+	if file.Agent == parser.AgentClaude && cleanCache &&
+		!e.forceParseRequested(file) {
 		res.claudeRowlessFreshnessKey =
 			e.claudeRowlessFreshnessCacheKey(file.Path, fingerprint.Hash)
 	}

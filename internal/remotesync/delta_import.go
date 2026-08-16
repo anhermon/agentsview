@@ -57,18 +57,19 @@ type PreparedDeltaImport struct {
 	DisarmedJournal MirrorChangeJournal
 	Stats           SyncStats
 
-	database    *db.DB
-	layout      importLayout
-	config      syncpkg.EngineConfig
-	plan        syncpkg.ChangedPathPlan
-	forceScope  syncpkg.ChangedPathPruneScope
-	cache       map[string]int64
-	remoteCache map[string]int64
-	full        bool
-	forceParse  bool
-	progress    syncpkg.ProgressFunc
-	save        func(*db.DB, *syncpkg.Engine, remotePathMap) error
-	apply       func(string, []string, map[string]int64) error
+	database       *db.DB
+	layout         importLayout
+	config         syncpkg.EngineConfig
+	plan           syncpkg.ChangedPathPlan
+	forceScope     syncpkg.ChangedPathPruneScope
+	cache          map[string]int64
+	remoteCache    map[string]int64
+	full           bool
+	forceParse     bool
+	forceFullParse bool
+	progress       syncpkg.ProgressFunc
+	save           func(*db.DB, *syncpkg.Engine, remotePathMap) error
+	apply          func(string, []string, map[string]int64) error
 }
 
 func (im Importer) PreparePending(
@@ -77,10 +78,12 @@ func (im Importer) PreparePending(
 ) (*PreparedDeltaImport, error) {
 	// FullReason can be restored from a retained journal. It preserves the
 	// pending full-import scope and its observable cause, but it must not turn
-	// an ordinary replay into another force-parse attempt. Only the current
-	// invocation's explicit Full request or an armed host-wide invalidation
-	// bypasses freshness and failure skips.
-	forceParse := im.Full || request.Journal.InvalidateAll
+	// an ordinary replay into another hard force-parse attempt. Only the current
+	// invocation's explicit Full request bypasses durable failure skips. The
+	// journal's separate full-parse intent still bypasses freshness and
+	// incremental append for sources without a post-invalidation skip entry.
+	forceParse := im.Full
+	forceFullParse := request.Journal.ForceFullParseAll
 	stats := SyncStats{
 		FullReason:     request.FullReason,
 		JournalOutcome: JournalAbortedBeforeProcessing,
@@ -133,7 +136,9 @@ func (im Importer) PreparePending(
 	}
 	stats.ExactSources = len(plan.Files)
 	stats.FallbackProviders = len(plan.FallbackProviders)
-	forceScope := plan.PruneScope(armedJournalPhysicalPaths(layout, request.Journal))
+	forceScope := plan.PruneScope(forceFullParseJournalPhysicalPaths(
+		layout, request.Journal,
+	))
 
 	full := request.Journal.FullImport || request.FullReason != "" || im.Full
 	ensureVisualStudioCopilotRemoteSkipMigration(im.DB, im.Host)
@@ -189,12 +194,13 @@ func (im Importer) PreparePending(
 		DisarmedJournal: disarmMirrorChanges(request.Journal),
 		Stats:           stats,
 		database:        im.DB, layout: layout, config: config, plan: plan,
-		cache:       preparedCache,
-		remoteCache: maps.Clone(pruned),
-		forceScope:  forceScope,
-		full:        full,
-		forceParse:  forceParse,
-		progress:    im.Progress, save: im.saveSkipCache, apply: apply,
+		cache:          preparedCache,
+		remoteCache:    maps.Clone(pruned),
+		forceScope:     forceScope,
+		full:           full,
+		forceParse:     forceParse,
+		forceFullParse: forceFullParse,
+		progress:       im.Progress, save: im.saveSkipCache, apply: apply,
 	}, nil
 }
 
@@ -216,6 +222,8 @@ func (pending *PreparedDeltaImport) Execute(
 		progress := hostProgress(pending.layout.paths.host, pending.progress)
 		if pending.forceParse {
 			engineStats = engine.SyncAllForceParse(ctx, progress)
+		} else if pending.forceFullParse {
+			engineStats = engine.SyncAllForceParseAfterCache(ctx, progress)
 		} else {
 			engineStats = engine.SyncAll(ctx, progress)
 		}
@@ -453,7 +461,7 @@ func pruneRemoteSkipCache(
 	}
 	pruned := make(map[string]int64, len(cache))
 	maps.Copy(pruned, cache)
-	armed := armedJournalPhysicalPaths(layout, journal)
+	armed := cacheInvalidationJournalPhysicalPaths(layout, journal)
 	scope := plan.PruneScope(armed)
 	stats.ExactScopes = len(scope.Files)
 	stats.ProviderScopes = len(scope.FallbackProviders)
@@ -506,13 +514,32 @@ func pruneRemoteSkipCache(
 	return pruned, stats
 }
 
-func armedJournalPhysicalPaths(
+func cacheInvalidationJournalPhysicalPaths(
 	layout importLayout,
 	journal MirrorChangeJournal,
 ) map[string]struct{} {
+	return journalPhysicalPaths(layout, journal, func(entry MirrorChangeEntry) bool {
+		return entry.InvalidateCache
+	})
+}
+
+func forceFullParseJournalPhysicalPaths(
+	layout importLayout,
+	journal MirrorChangeJournal,
+) map[string]struct{} {
+	return journalPhysicalPaths(layout, journal, func(entry MirrorChangeEntry) bool {
+		return entry.ForceFullParse
+	})
+}
+
+func journalPhysicalPaths(
+	layout importLayout,
+	journal MirrorChangeJournal,
+	include func(MirrorChangeEntry) bool,
+) map[string]struct{} {
 	armed := make(map[string]struct{})
 	for _, entry := range journal.Entries {
-		if !entry.InvalidateCache {
+		if !include(entry) {
 			continue
 		}
 		physical, err := safeLocalArchivePath(

@@ -24,8 +24,9 @@ type ChangedPathSyncResult struct {
 
 // ChangedPathSyncOptions controls execution-only behavior for a planned
 // changed-path import. ForceFullParse is the armed journal projection: its
-// exact sources and fallback providers bypass freshness and incremental append
-// for this attempt only.
+// exact sources and fallback providers bypass freshness and incremental append.
+// A durable skip entry may still suppress a source attempted after the
+// journal's cache invalidation was consumed.
 type ChangedPathSyncOptions struct {
 	ForceFullParse ChangedPathPruneScope
 }
@@ -77,13 +78,15 @@ func (e *Engine) SyncChangedPathPlanWithOptionsContext(
 	planFiles := append([]parser.DiscoveredFile(nil), plan.Files...)
 	for i := range planFiles {
 		if _, force := forceSourceKeys[changedPathSourceKey(planFiles[i])]; force {
-			planFiles[i].ForceParse = true
+			// The journal scope supersedes plan-time ForceParse. Its cache was
+			// already invalidated durably, so a surviving entry is proof of a
+			// later attempt and must be allowed to suppress replay.
+			planFiles[i].ForceParse = false
 			planFiles[i].ForceFullParse = true
 		}
 	}
 	for i := range fallbackFiles {
 		if _, force := forceProviders[fallbackFiles[i].Agent]; force {
-			fallbackFiles[i].ForceParse = true
 			fallbackFiles[i].ForceFullParse = true
 		}
 	}

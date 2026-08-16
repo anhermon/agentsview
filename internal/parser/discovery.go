@@ -62,7 +62,7 @@ type DiscoveredFile struct {
 	ForceParse        bool // caller requires freshness bypass
 	// ForceFullParse also disables append-only processing so a materialized
 	// replacement cannot be mistaken for bytes appended to the stored source.
-	// Callers set ForceParse with it so every other freshness gate is bypassed.
+	// A durable skip-cache entry may suppress it after a previous attempt.
 	ForceFullParse  bool
 	ProviderSource  *SourceRef // provider-owned source identity, when known
 	ProviderProcess bool       // true when this caller may parse via ProviderSource

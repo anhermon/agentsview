@@ -79,12 +79,14 @@ func TestSyncChangedPathPlanReportsOnlyMtimeCacheSuppression(t *testing.T) {
 	assert.NotContains(t, provider.calls, "parse")
 }
 
-func TestSyncChangedPathPlanArmedScopeForcesOneFullParse(t *testing.T) {
+func TestSyncChangedPathPlanFullParseScopeUsesDurableAttemptCache(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		plan     func(parser.DiscoveredFile) ChangedPathPlan
-		options  func(parser.DiscoveredFile) ChangedPathSyncOptions
-		fallback bool
+		name           string
+		plan           func(parser.DiscoveredFile) ChangedPathPlan
+		options        func(parser.DiscoveredFile) ChangedPathSyncOptions
+		fallback       bool
+		cached         bool
+		planForceParse bool
 	}{
 		{
 			name: "exact source",
@@ -110,6 +112,34 @@ func TestSyncChangedPathPlanArmedScopeForcesOneFullParse(t *testing.T) {
 				}}
 			},
 			fallback: true,
+		},
+		{
+			name: "exact source already attempted",
+			plan: func(file parser.DiscoveredFile) ChangedPathPlan {
+				return ChangedPathPlan{Files: []parser.DiscoveredFile{file}}
+			},
+			options: func(file parser.DiscoveredFile) ChangedPathSyncOptions {
+				return ChangedPathSyncOptions{ForceFullParse: ChangedPathPruneScope{
+					Files: []parser.DiscoveredFile{file},
+				}}
+			},
+			cached:         true,
+			planForceParse: true,
+		},
+		{
+			name: "fallback source already attempted",
+			plan: func(parser.DiscoveredFile) ChangedPathPlan {
+				return ChangedPathPlan{FallbackProviders: []parser.AgentType{
+					parser.AgentCowork,
+				}}
+			},
+			options: func(parser.DiscoveredFile) ChangedPathSyncOptions {
+				return ChangedPathSyncOptions{ForceFullParse: ChangedPathPruneScope{
+					FallbackProviders: []parser.AgentType{parser.AgentCowork},
+				}}
+			},
+			fallback: true,
+			cached:   true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,11 +167,14 @@ func TestSyncChangedPathPlanArmedScopeForcesOneFullParse(t *testing.T) {
 				},
 			})
 			t.Cleanup(engine.Close)
-			engine.skipCache[providerAgentSkipCacheKey(path, parser.AgentCowork)] =
-				fingerprint.MTimeNS
+			if tc.cached {
+				engine.skipCache[providerAgentSkipCacheKey(path, parser.AgentCowork)] =
+					fingerprint.MTimeNS
+			}
 			file := parser.DiscoveredFile{
 				Path: path, Agent: parser.AgentCowork,
 				ProviderSource: &source, ProviderProcess: true,
+				ForceParse: tc.planForceParse,
 			}
 
 			result, err := engine.SyncChangedPathPlanWithOptionsContext(
@@ -149,9 +182,14 @@ func TestSyncChangedPathPlanArmedScopeForcesOneFullParse(t *testing.T) {
 			)
 			require.NoError(t, err)
 			assert.Equal(t, 1, result.FilesProcessed)
-			assert.Zero(t, result.Stats.Skipped)
-			require.Len(t, provider.parseRequests, 1)
-			assert.True(t, provider.parseRequests[0].ForceParse)
+			if tc.cached {
+				assert.Equal(t, 1, result.Stats.Skipped)
+				assert.Empty(t, provider.parseRequests)
+			} else {
+				assert.Zero(t, result.Stats.Skipped)
+				require.Len(t, provider.parseRequests, 1)
+				assert.True(t, provider.parseRequests[0].ForceParse)
+			}
 		})
 	}
 }
