@@ -1564,7 +1564,8 @@ func TestHTTPSyncAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, contributor.ForceParse)
 	assert.True(t, contributor.ForceFullParseAfterCache)
-	assert.NotEmpty(t, contributor.Config.InitialSkipCache)
+	assert.Empty(t, contributor.Config.InitialSkipCache,
+		"a new rebuild must not trust skip entries from routine imports")
 
 	engine := syncpkg.NewEngine(database, syncpkg.EngineConfig{})
 	t.Cleanup(engine.Close)
@@ -1576,8 +1577,7 @@ func TestHTTPSyncAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, stats.Aborted)
 	assert.Zero(t, stats.Failed)
-	assert.Positive(t, stats.Skipped,
-		"automatic rebuilds must honor durable source-attempt entries")
+	assert.Zero(t, stats.Skipped)
 }
 
 func TestHTTPLegacyAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T) {
@@ -1608,7 +1608,8 @@ func TestHTTPLegacyAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T)
 	require.NoError(t, err)
 	assert.False(t, contributor.ForceParse)
 	assert.True(t, contributor.ForceFullParseAfterCache)
-	assert.NotEmpty(t, contributor.Config.InitialSkipCache)
+	assert.Empty(t, contributor.Config.InitialSkipCache,
+		"legacy rebuilds have no durable attempt generation")
 
 	engine := syncpkg.NewEngine(database, syncpkg.EngineConfig{})
 	t.Cleanup(engine.Close)
@@ -1620,7 +1621,7 @@ func TestHTTPLegacyAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T)
 	require.NoError(t, err)
 	assert.False(t, stats.Aborted)
 	assert.Zero(t, stats.Failed)
-	assert.Positive(t, stats.Skipped)
+	assert.Zero(t, stats.Skipped)
 }
 
 func TestHTTPExplicitFullForceParsesRetainedJournalFullImport(t *testing.T) {
@@ -3924,6 +3925,45 @@ func TestHTTPMirrorSameMtimeGrowingRewriteFullParses(t *testing.T) {
 	assert.Zero(t, second.Skipped)
 	messages, err := database.GetMessages(
 		t.Context(), "devbox~growing-rewrite", 0, 10, true,
+	)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t,
+		"replacement with a deliberately larger body",
+		messages[0].Content,
+	)
+}
+
+func TestHTTPMirrorBootstrapSameMtimeGrowingRewriteFullParses(t *testing.T) {
+	remote := newMirrorTestRemote(t)
+	mtime := time.Date(2026, 7, 11, 14, 30, 0, 0, time.UTC)
+	path := remote.writeSession(t, "bootstrap-rewrite.jsonl", mtime, "old")
+	dataDir := t.TempDir()
+	database, hs := newMirrorSync(t, remote, dataDir)
+
+	first, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, first.SessionsSynced)
+	before, err := os.Stat(path)
+	require.NoError(t, err)
+
+	remote.writeSession(
+		t, "bootstrap-rewrite.jsonl", mtime,
+		"replacement with a deliberately larger body",
+	)
+	after, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Greater(t, after.Size(), before.Size())
+	require.Equal(t, before.ModTime(), after.ModTime())
+	require.NoError(t, os.RemoveAll(MirrorDir(dataDir, hs.Host)))
+
+	second, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, FullImportBootstrap, second.FullReason)
+	assert.Equal(t, 1, second.SessionsSynced)
+	assert.Zero(t, second.Skipped)
+	messages, err := database.GetMessages(
+		t.Context(), "devbox~bootstrap-rewrite", 0, 10, true,
 	)
 	require.NoError(t, err)
 	require.Len(t, messages, 1)

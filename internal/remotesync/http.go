@@ -117,13 +117,12 @@ func (hs HTTPSync) importRoot(
 	ctx context.Context, targets TargetSet, root string,
 ) (SyncStats, error) {
 	stats, err := Importer{
-		Host:                     hs.Host,
-		Full:                     hs.forceParseRequested(),
-		ForceFullParseAfterCache: hs.forceFullParseAfterCacheRequested(),
-		RequireComplete:          true,
-		DB:                       hs.DB,
-		BlockedResultCategories:  hs.BlockedResultCategories,
-		Progress:                 hs.Progress,
+		Host:                    hs.Host,
+		Full:                    hs.Full,
+		RequireComplete:         true,
+		DB:                      hs.DB,
+		BlockedResultCategories: hs.BlockedResultCategories,
+		Progress:                hs.Progress,
 	}.ImportExtracted(ctx, targets, root)
 	stats.FullReason = hs.FullReason
 	if stats.FullReason == "" {

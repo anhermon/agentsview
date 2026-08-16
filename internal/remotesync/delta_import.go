@@ -42,6 +42,8 @@ type DeltaImportRequest struct {
 	FullReason               FullImportReason
 	ForceParse               bool
 	ForceFullParseAfterCache bool
+	ResetAttemptCache        bool
+	MarkAttemptCacheReady    bool
 }
 
 type CachePruneStats struct {
@@ -86,7 +88,7 @@ func (im Importer) PreparePending(
 	// incremental append for sources without a post-invalidation skip entry.
 	forceParse := request.ForceParse
 	forceFullParse := request.Journal.ForceFullParseAll ||
-		request.ForceFullParseAfterCache
+		request.ForceFullParseAfterCache || journalForcesFullParse(request.Journal)
 	stats := SyncStats{
 		FullReason:     request.FullReason,
 		JournalOutcome: JournalAbortedBeforeProcessing,
@@ -155,6 +157,13 @@ func (im Importer) PreparePending(
 	pruned, pruneStats := pruneRemoteSkipCache(
 		remoteCache, layout, plan, request.Journal,
 	)
+	if request.ResetAttemptCache {
+		pruned = make(map[string]int64)
+		pruneStats = CachePruneStats{
+			HostWideScope: true,
+			HostWide:      len(remoteCache),
+		}
+	}
 	stats.PruningDuration = time.Since(pruningStart)
 	stats.PrunedExact = pruneStats.Exact
 	stats.PrunedProvider = pruneStats.Provider
@@ -174,7 +183,7 @@ func (im Importer) PreparePending(
 	deleted := removedRemoteSkipCacheKeys(remoteCache, pruned)
 	var persistErr error
 	if len(deleted) > 0 {
-		if request.Journal.InvalidateAll {
+		if request.Journal.InvalidateAll || request.ResetAttemptCache {
 			persistErr = replace(im.Host, pruned)
 		} else {
 			persistErr = apply(im.Host, deleted, nil)
@@ -193,8 +202,12 @@ func (im Importer) PreparePending(
 	if forceParse {
 		preparedCache = nil
 	}
+	disarmedJournal := disarmMirrorChanges(request.Journal)
+	if request.MarkAttemptCacheReady {
+		disarmedJournal.DataRebuildCacheReady = true
+	}
 	return &PreparedDeltaImport{
-		DisarmedJournal: disarmMirrorChanges(request.Journal),
+		DisarmedJournal: disarmedJournal,
 		Stats:           stats,
 		database:        im.DB, layout: layout, config: config, plan: plan,
 		cache:          preparedCache,
@@ -205,6 +218,15 @@ func (im Importer) PreparePending(
 		forceFullParse: forceFullParse,
 		progress:       im.Progress, save: im.saveSkipCache, apply: apply,
 	}, nil
+}
+
+func journalForcesFullParse(journal MirrorChangeJournal) bool {
+	for _, entry := range journal.Entries {
+		if entry.ForceFullParse {
+			return true
+		}
+	}
+	return false
 }
 
 func (pending *PreparedDeltaImport) Execute(

@@ -157,7 +157,8 @@ func TestPreparedHTTPSyncRebuildContributor(t *testing.T) {
 	activeStats, err := prepared.ImportActive(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 0, activeStats.Failed)
-	assert.Equal(t, 1, activeStats.Skipped)
+	assert.Equal(t, 0, activeStats.Skipped,
+		"reusing a prepared bootstrap import must preserve its full-parse scope")
 }
 
 func TestPreparedHTTPSyncRebuildOutcomeClassification(t *testing.T) {

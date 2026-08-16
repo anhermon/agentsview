@@ -465,14 +465,6 @@ func (p *PreparedHTTP) RebuildContributor() (syncpkg.RebuildContributor, error) 
 	}
 	forceParse := p.sync.forceParseRequested()
 	forceFullParseAfterCache := p.sync.forceFullParseAfterCacheRequested()
-	if p.mirrorImport == nil && forceFullParseAfterCache {
-		config.InitialSkipCache, err = translatedImportSkipCache(
-			p.sync.DB, p.sync.Host, layout,
-		)
-		if err != nil {
-			return syncpkg.RebuildContributor{}, err
-		}
-	}
 	contributor := syncpkg.RebuildContributor{
 		Name:                     p.sync.Host,
 		Config:                   config,
@@ -884,6 +876,7 @@ func (hs HTTPSync) prepareMirror(
 	hs.reportProgressDetail(fmt.Sprintf(
 		"Planning import from %s: %d pending paths", hs.Host, len(journal.Entries),
 	))
+	dataRebuild := hs.forceFullParseAfterCacheRequested()
 	pending, err := (Importer{
 		Host: hs.Host, Full: hs.Full, DB: hs.DB,
 		BlockedResultCategories: hs.BlockedResultCategories,
@@ -893,7 +886,9 @@ func (hs HTTPSync) prepareMirror(
 	}).PreparePending(ctx, DeltaImportRequest{
 		Journal: journal, FullReason: fullReason,
 		ForceParse:               hs.forceParseRequested(),
-		ForceFullParseAfterCache: hs.forceFullParseAfterCacheRequested(),
+		ForceFullParseAfterCache: dataRebuild,
+		ResetAttemptCache:        dataRebuild && !journal.DataRebuildCacheReady,
+		MarkAttemptCacheReady:    dataRebuild,
 	})
 	if err != nil {
 		return nil, err
