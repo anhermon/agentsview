@@ -916,8 +916,9 @@ route and are not subject to the ordinary 30-second operation timeout.
 | `automation` | `all`, `interactive`, or `automated`; default `all` |
 
 Project, branch, agent, and machine filters are limited to 1,024 UTF-8 bytes
-each and 3,072 bytes combined so the signed report ID remains safe to transport
-in the session-page URL.
+each and 3,072 bytes combined. The fully encoded signed report ID is also
+validated before aggregation so JSON escaping cannot overflow the session-page
+URL token.
 
 Response excerpt:
 

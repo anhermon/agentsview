@@ -38,13 +38,15 @@ func (group *activityReportBuildGroup) do(
 			ctx: buildCtx, cancel: cancel, done: make(chan struct{}), waiters: 1,
 		}
 		group.flights[key] = flight
-		go func() {
-			flight.artifacts, flight.err = build(flight.ctx)
+		go func(active *activityReportFlight) {
+			active.artifacts, active.err = build(active.ctx)
 			group.mu.Lock()
-			delete(group.flights, key)
-			close(flight.done)
+			if group.flights[key] == active {
+				delete(group.flights, key)
+			}
+			close(active.done)
 			group.mu.Unlock()
-		}()
+		}(flight)
 	} else {
 		flight.waiters++
 	}
@@ -52,21 +54,24 @@ func (group *activityReportBuildGroup) do(
 
 	select {
 	case <-flight.done:
-		group.release(flight, false)
+		group.release(key, flight, false)
 		return flight.artifacts, flight.err
 	case <-ctx.Done():
-		group.release(flight, true)
+		group.release(key, flight, true)
 		return activity.CandidateArtifacts{}, ctx.Err()
 	}
 }
 
 func (group *activityReportBuildGroup) release(
-	flight *activityReportFlight, canceled bool,
+	key string, flight *activityReportFlight, canceled bool,
 ) {
 	group.mu.Lock()
 	defer group.mu.Unlock()
 	flight.waiters--
 	if canceled && flight.waiters == 0 {
+		if group.flights[key] == flight {
+			delete(group.flights, key)
+		}
 		flight.cancel()
 	}
 }

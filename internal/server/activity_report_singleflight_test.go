@@ -106,6 +106,112 @@ func TestActivityReportBuildGroupCancelsAbandonedBuild(t *testing.T) {
 	}
 }
 
+func TestActivityReportBuildGroupStartsFreshAfterLastWaiterCancels(t *testing.T) {
+	group := newActivityReportBuildGroup()
+	firstStarted := make(chan struct{})
+	firstCanceled := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	var releaseFirstOnce, releaseSecondOnce sync.Once
+	t.Cleanup(func() {
+		releaseFirstOnce.Do(func() { close(releaseFirst) })
+		releaseSecondOnce.Do(func() { close(releaseSecond) })
+	})
+	var builds atomic.Int32
+	build := func(ctx context.Context) (activity.CandidateArtifacts, error) {
+		switch builds.Add(1) {
+		case 1:
+			close(firstStarted)
+			<-ctx.Done()
+			close(firstCanceled)
+			<-releaseFirst
+			return activity.CandidateArtifacts{}, ctx.Err()
+		case 2:
+			close(secondStarted)
+			<-releaseSecond
+			return activity.CandidateArtifacts{
+				Sessions: []activity.SessionRow{{SessionID: "fresh"}},
+			}, nil
+		default:
+			return activity.CandidateArtifacts{
+				Sessions: []activity.SessionRow{{SessionID: "duplicate"}},
+			}, nil
+		}
+	}
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := group.do(firstCtx, "same", build)
+		firstDone <- err
+	}()
+	<-firstStarted
+	group.mu.Lock()
+	firstFlight := group.flights["same"]
+	group.mu.Unlock()
+	require.NotNil(t, firstFlight)
+
+	cancelFirst()
+	require.ErrorIs(t, <-firstDone, context.Canceled)
+	select {
+	case <-firstCanceled:
+	case <-time.After(time.Second):
+		require.FailNow(t, "abandoned build was not canceled")
+	}
+
+	type result struct {
+		artifacts activity.CandidateArtifacts
+		err       error
+	}
+	secondDone := make(chan result, 1)
+	go func() {
+		artifacts, err := group.do(context.Background(), "same", build)
+		secondDone <- result{artifacts: artifacts, err: err}
+	}()
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		require.FailNow(t, "replacement request joined the canceled flight")
+	}
+	group.mu.Lock()
+	secondFlight := group.flights["same"]
+	group.mu.Unlock()
+	require.NotNil(t, secondFlight)
+	require.NotSame(t, firstFlight, secondFlight)
+
+	releaseFirstOnce.Do(func() { close(releaseFirst) })
+	select {
+	case <-firstFlight.done:
+	case <-time.After(time.Second):
+		require.FailNow(t, "canceled flight did not exit")
+	}
+	group.mu.Lock()
+	currentFlight := group.flights["same"]
+	group.mu.Unlock()
+	require.Same(t, secondFlight, currentFlight,
+		"old build completion must not delete its replacement")
+
+	thirdDone := make(chan result, 1)
+	go func() {
+		artifacts, err := group.do(context.Background(), "same", build)
+		thirdDone <- result{artifacts: artifacts, err: err}
+	}()
+	require.Eventually(t, func() bool {
+		group.mu.Lock()
+		defer group.mu.Unlock()
+		return group.flights["same"] == secondFlight && secondFlight.waiters == 2
+	}, time.Second, time.Millisecond)
+	releaseSecondOnce.Do(func() { close(releaseSecond) })
+
+	for _, completed := range []result{<-secondDone, <-thirdDone} {
+		require.NoError(t, completed.err)
+		require.Len(t, completed.artifacts.Sessions, 1)
+		require.Equal(t, "fresh", completed.artifacts.Sessions[0].SessionID)
+	}
+	require.Equal(t, int32(2), builds.Load())
+}
+
 func TestActivityReportProgressBuildsKeepCallbacksRequestLocal(t *testing.T) {
 	store := &progressArtifactStore{
 		started: make(chan struct{}, 2),

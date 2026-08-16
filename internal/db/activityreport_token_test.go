@@ -26,6 +26,7 @@ func TestActivityReportTokenRejectsImpracticalURLLength(t *testing.T) {
 	_, err := EncodeSignedActivityReportToken(
 		bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte("x"), MaxActivityReportTokenLength),
 	)
+	assert.ErrorIs(t, err, ErrActivityReportTokenTooLong)
 	assert.ErrorIs(t, err, ErrInvalidActivityReportToken)
 }
 

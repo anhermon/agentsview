@@ -11,7 +11,12 @@ import (
 
 const MaxActivityReportTokenLength = 8 * 1024
 
-var ErrInvalidActivityReportToken = errors.New("invalid activity report token")
+var (
+	ErrInvalidActivityReportToken = errors.New("invalid activity report token")
+	ErrActivityReportTokenTooLong = fmt.Errorf(
+		"%w: encoded token exceeds maximum length", ErrInvalidActivityReportToken,
+	)
+)
 
 func EncodeSignedActivityReportToken(secret, payload []byte) (string, error) {
 	if len(secret) == 0 {
@@ -24,8 +29,8 @@ func EncodeSignedActivityReportToken(secret, payload []byte) (string, error) {
 	token := signed + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	if len(token) > MaxActivityReportTokenLength {
 		return "", fmt.Errorf(
-			"%w: encoded token exceeds %d bytes",
-			ErrInvalidActivityReportToken, MaxActivityReportTokenLength,
+			"%w of %d bytes", ErrActivityReportTokenTooLong,
+			MaxActivityReportTokenLength,
 		)
 	}
 	return token, nil

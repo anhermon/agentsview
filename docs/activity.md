@@ -208,8 +208,9 @@ summary. Sync notifications continue to mark the dashboard stale and do not
 automatically reaggregate it.
 
 Each project, branch, agent, or machine filter is limited to 1,024 UTF-8 bytes,
-with a 3,072-byte combined limit. This leaves encoding headroom for the signed
-`report_id` in a URL path; oversized filters are rejected before aggregation.
+with a 3,072-byte combined limit. The server also validates the fully encoded
+signed `report_id`, including JSON escaping and base64 expansion, before
+aggregation.
 
 Older CLIs do not validate `schema_version` and can decode a v6 plain-JSON
 response. The embedded first page deliberately preserves the prior default

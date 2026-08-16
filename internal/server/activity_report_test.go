@@ -42,6 +42,28 @@ func TestActivityProjectReclassificationCandidatesRouteRemoved(t *testing.T) {
 // deterministic and complete (non-partial) regardless of wall clock.
 const activityDate = "2025-06-02"
 
+func TestActivityReportRejectsFilterWhoseSignedIDExceedsLimit(t *testing.T) {
+	te := setup(t)
+	values := url.Values{
+		"preset":     {"day"},
+		"date":       {activityDate},
+		"timezone":   {"UTC"},
+		"project":    {strings.Repeat("\"", 1024)},
+		"agent":      {strings.Repeat("\"", 1024)},
+		"machine":    {strings.Repeat("\"", 1024)},
+		"automation": {"all"},
+	}
+
+	req := httptest.NewRequest(
+		http.MethodGet, "/api/v1/activity/report?"+values.Encode(), nil,
+	)
+	req.Header.Set("Accept", "text/event-stream")
+	response := httptest.NewRecorder()
+	te.handler.ServeHTTP(response, req)
+	assertStatus(t, response, http.StatusBadRequest)
+	assert.Contains(t, response.Body.String(), "report ID")
+}
+
 // seedActivityReportFixture seeds two sessions that overlap in wall-clock
 // on activityDate so peak concurrency is 2. Each session gets distinct,
 // increasing per-message timestamps inside the day (under the 300s gap

@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -57,6 +59,12 @@ type resolvedActivitySelection struct {
 	filter db.AnalyticsFilter
 }
 
+type activityReportBuildInputs struct {
+	artifactStore db.ActivityReportArtifactStore
+	tokenStore    db.ActivityReportTokenStore
+	probe         activity.SourceProbe
+}
+
 func (s *Server) humaActivityReport(
 	ctx context.Context, in *activityReportInput,
 ) (*huma.StreamResponse, error) {
@@ -66,6 +74,10 @@ func (s *Server) humaActivityReport(
 		GitBranch: in.GitBranch, Agent: in.Agent, Machine: in.Machine,
 		Automation: in.Automation,
 	}, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	buildInputs, err := s.resolveActivityReportBuildInputs(ctx, selection)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +100,9 @@ func (s *Server) humaActivityReport(
 			})
 			onProgress = sendProgress
 		}
-		report, buildErr := s.buildActivityReport(ctx, selection, onProgress)
+		report, buildErr := s.buildActivityReport(
+			ctx, selection, buildInputs, onProgress,
+		)
 		if buildErr != nil {
 			if streaming {
 				sse.SendJSON("error", map[string]string{"error": buildErr.Error()})
@@ -109,24 +123,56 @@ func (s *Server) humaActivityReport(
 func (s *Server) buildActivityReport(
 	ctx context.Context,
 	selection resolvedActivitySelection,
+	inputs *activityReportBuildInputs,
 	onProgress activity.ProgressFunc,
 ) (activity.Report, error) {
-	artifactStore, artifactsOK := s.db.(db.ActivityReportArtifactStore)
-	tokenStore, tokenOK := s.db.(db.ActivityReportTokenStore)
-	if !artifactsOK || !tokenOK {
+	if inputs == nil {
 		return s.db.GetActivityReport(ctx, selection.filter, selection.query)
 	}
-	probe, err := s.activitySourceProbe(ctx)
-	if err != nil {
-		return activity.Report{}, err
-	}
 	artifacts, err := s.buildActivityArtifacts(
-		ctx, artifactStore, selection, probe, onProgress,
+		ctx, inputs.artifactStore, selection, inputs.probe, onProgress,
 	)
 	if err != nil {
 		return activity.Report{}, err
 	}
-	return s.prepareActivityReport(selection, tokenStore, artifacts, probe)
+	return s.prepareActivityReport(
+		selection, inputs.tokenStore, artifacts, inputs.probe,
+	)
+}
+
+func (s *Server) resolveActivityReportBuildInputs(
+	ctx context.Context, selection resolvedActivitySelection,
+) (*activityReportBuildInputs, error) {
+	artifactStore, artifactsOK := s.db.(db.ActivityReportArtifactStore)
+	tokenStore, tokenOK := s.db.(db.ActivityReportTokenStore)
+	if !artifactsOK || !tokenOK {
+		return nil, nil
+	}
+	probe, err := s.activitySourceProbe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := preflightActivityReportToken(tokenStore, selection, probe); err != nil {
+		if errors.Is(err, db.ErrActivityReportTokenTooLong) {
+			return nil, apiError(http.StatusBadRequest,
+				"activity filters produce an oversized report ID")
+		}
+		return nil, err
+	}
+	return &activityReportBuildInputs{
+		artifactStore: artifactStore, tokenStore: tokenStore, probe: probe,
+	}, nil
+}
+
+func preflightActivityReportToken(
+	tokenStore db.ActivityReportTokenStore,
+	selection resolvedActivitySelection,
+	probe activity.SourceProbe,
+) error {
+	_, err := encodeActivityToken(tokenStore, newActivityReportTokenPayload(
+		selection, strings.Repeat("0", sha256.Size*2), probe,
+	))
+	return err
 }
 
 func (s *Server) activitySourceProbe(ctx context.Context) (activity.SourceProbe, error) {
