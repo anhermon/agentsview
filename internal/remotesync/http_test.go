@@ -1484,6 +1484,54 @@ func TestHTTPDisarmedExplicitFullReplayUsesPersistedSkip(t *testing.T) {
 	assert.NoFileExists(t, journalPath)
 }
 
+func TestHTTPExplicitFullRearmsRetainedFullJournalBeforeExecution(t *testing.T) {
+	remote := newMirrorTestRemote(t)
+	rowlessPath := filepath.Join(remote.dir, "cache-project", "rowless.jsonl")
+	rowlessBody := testjsonl.ClaudeUserJSON(
+		"<command-name>/usage</command-name>\n"+
+			"<command-message>usage</command-message>\n"+
+			"<command-args></command-args>",
+		"2026-08-14T10:00:00Z",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rowlessPath), 0o755))
+	require.NoError(t, os.WriteFile(rowlessPath, []byte(rowlessBody), 0o644))
+	mtime := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(rowlessPath, mtime, mtime))
+
+	dataDir := t.TempDir()
+	database, hs := newMirrorSync(t, remote, dataDir)
+	_, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	cache, err := database.LoadRemoteSkippedFiles(hs.Host)
+	require.NoError(t, err)
+	require.NotEmpty(t, cache)
+
+	journalPath := mirrorJournalPath(MirrorDir(dataDir, hs.Host))
+	require.NoError(t, replaceMirrorChangeJournal(journalPath, MirrorChangeJournal{
+		Version:           mirrorJournalVersion,
+		FullImport:        true,
+		FullImportReason:  FullImportJournalRecovery,
+		ForceFullParseAll: true,
+	}))
+
+	hs.Full = true
+	prepared, err := hs.Prepare(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, prepared.Close(),
+		"simulate a rebuild that stops before the remote contributor runs")
+	afterPrepare, err := database.LoadRemoteSkippedFiles(hs.Host)
+	require.NoError(t, err)
+	assert.Empty(t, afterPrepare,
+		"explicit full preparation must durably invalidate retained failure cache state")
+
+	hs.Full = false
+	replayed, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, replayed.Skipped,
+		"ordinary replay must parse sources not reached by the explicit full run")
+	assert.NoFileExists(t, journalPath)
+}
+
 func TestHTTPSyncFailedRebuildDoesNotCacheDiscardedParserExclusion(t *testing.T) {
 	remote := newMirrorTestRemote(t)
 	mtime := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)

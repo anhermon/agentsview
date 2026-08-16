@@ -872,17 +872,19 @@ func (hs HTTPSync) prepareMirror(
 			fullReason = FullImportBootstrap
 		}
 	}
-	if fullReason == FullImportExplicit && !journal.FullImport {
-		journal = MirrorChangeJournal{
-			Version:                 mirrorJournalVersion,
-			FullImport:              true,
-			FullImportReason:        FullImportExplicit,
-			InvalidateAll:           true,
-			ForceFullParseAll:       true,
-			RequiredDataVersion:     journal.RequiredDataVersion,
-			DataRebuildCacheVersion: journal.DataRebuildCacheVersion,
-			FileScopedDirs:          journal.FileScopedDirs,
+	if fullReason == FullImportExplicit {
+		if !journal.FullImport {
+			journal = MirrorChangeJournal{
+				Version:                 mirrorJournalVersion,
+				FullImport:              true,
+				FullImportReason:        FullImportExplicit,
+				RequiredDataVersion:     journal.RequiredDataVersion,
+				DataRebuildCacheVersion: journal.DataRebuildCacheVersion,
+				FileScopedDirs:          journal.FileScopedDirs,
+			}
 		}
+		journal.InvalidateAll = true
+		journal.ForceFullParseAll = true
 	}
 	if journal.FullImportReason != "" {
 		fullReason = journal.FullImportReason
