@@ -177,7 +177,7 @@ func TestMirrorChangeJournalCombinedOwnershipPathByteBound(t *testing.T) {
 	require.NoError(t, validateMirrorChangeJournal(overflow))
 }
 
-func TestMirrorChangeJournalRoundTripAndAbsentUpgrade(t *testing.T) {
+func TestMirrorChangeJournalRoundTripAndAbsent(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "mirror")
 	path := mirrorJournalPath(root)
 
@@ -201,57 +201,6 @@ func TestMirrorChangeJournalRoundTripAndAbsentUpgrade(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 	require.NoError(t, retireMirrorChangeJournal(path))
 
-	legacyPath := filepath.Join(t.TempDir(), "legacy.json")
-	require.NoError(t, os.WriteFile(legacyPath, []byte(
-		`{"version":1,"entries":[{"path":"sessions/legacy.jsonl"}]}`,
-	), 0o600))
-	upgraded, err := loadMirrorChangeJournal(legacyPath)
-	require.NoError(t, err)
-	assert.Equal(t, MirrorChangeJournal{
-		Version: mirrorJournalVersion,
-		Entries: []MirrorChangeEntry{{
-			Path: "sessions/legacy.jsonl", ForceFullParse: true,
-		}},
-	}, upgraded)
-
-	versionTwoPath := filepath.Join(t.TempDir(), "version-two.json")
-	require.NoError(t, os.WriteFile(versionTwoPath, []byte(
-		`{"version":2,"entries":[{"path":"sessions/pending.jsonl"}]}`,
-	), 0o600))
-	upgraded, err = loadMirrorChangeJournal(versionTwoPath)
-	require.NoError(t, err)
-	assert.Equal(t, MirrorChangeJournal{
-		Version: mirrorJournalVersion,
-		Entries: []MirrorChangeEntry{{
-			Path: "sessions/pending.jsonl", ForceFullParse: true,
-		}},
-	}, upgraded)
-
-	versionThreePath := filepath.Join(t.TempDir(), "version-three.json")
-	require.NoError(t, os.WriteFile(versionThreePath, []byte(
-		`{"version":3,"entries":[{"path":"sessions/version-three.jsonl","force_full_parse":true}]}`,
-	), 0o600))
-	upgraded, err = loadMirrorChangeJournal(versionThreePath)
-	require.NoError(t, err)
-	assert.Equal(t, MirrorChangeJournal{
-		Version: mirrorJournalVersion,
-		Entries: []MirrorChangeEntry{{
-			Path: "sessions/version-three.jsonl", ForceFullParse: true,
-		}},
-	}, upgraded)
-
-	versionFourPath := filepath.Join(t.TempDir(), "version-four.json")
-	require.NoError(t, os.WriteFile(versionFourPath, []byte(
-		`{"version":4,"full_import":true,"full_import_reason":"journal-recovery","force_full_parse_all":true,"data_rebuild_cache_ready":true}`,
-	), 0o600))
-	upgraded, err = loadMirrorChangeJournal(versionFourPath)
-	require.NoError(t, err)
-	assert.Equal(t, MirrorChangeJournal{
-		Version:           mirrorJournalVersion,
-		FullImport:        true,
-		FullImportReason:  FullImportJournalRecovery,
-		ForceFullParseAll: true,
-	}, upgraded)
 }
 
 func TestMirrorChangeJournalLoadErrorsAreTyped(t *testing.T) {

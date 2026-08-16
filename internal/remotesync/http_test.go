@@ -1484,52 +1484,42 @@ func TestHTTPDisarmedExplicitFullReplayUsesPersistedSkip(t *testing.T) {
 	assert.NoFileExists(t, journalPath)
 }
 
-func TestHTTPSyncUnifiedRebuildPreservesAttemptCacheForReplay(t *testing.T) {
+func TestHTTPSyncFailedRebuildDoesNotCacheDiscardedParserExclusion(t *testing.T) {
 	remote := newMirrorTestRemote(t)
-	qwenPawRoot := filepath.Join(filepath.Dir(remote.dir), "qwenpaw")
-	sessionDir := filepath.Join(qwenPawRoot, "default", "sessions")
-	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
-	brokenPath := filepath.Join(sessionDir, "broken.json")
-	require.NoError(t, os.WriteFile(brokenPath, []byte("{not valid json"), 0o644))
 	mtime := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
-	require.NoError(t, os.Chtimes(brokenPath, mtime, mtime))
-	claudeProject := filepath.Join(remote.dir, "cache-project")
-	require.NoError(t, os.MkdirAll(claudeProject, 0o755))
-	rowlessPath := filepath.Join(claudeProject, "rowless.jsonl")
-	rowlessBody := testjsonl.ClaudeUserJSON(
+	stalePath := remote.writeSession(
+		t, "stale.jsonl", mtime, "session that must be retired",
+	)
+	dataDir := t.TempDir()
+	database, hs := newMirrorSync(t, remote, dataDir)
+	_, err := hs.Run(t.Context())
+	require.NoError(t, err)
+
+	usageBody := testjsonl.ClaudeUserJSON(
 		"<command-name>/usage</command-name>\n"+
 			"<command-message>usage</command-message>\n"+
 			"<command-args></command-args>",
-		"2026-08-14T10:00:00Z",
+		"2026-08-14T10:01:00Z",
 	)
-	require.NoError(t, os.WriteFile(rowlessPath, []byte(rowlessBody), 0o644))
-	require.NoError(t, os.Chtimes(rowlessPath, mtime, mtime))
-	remote.targets = TargetSet{Dirs: map[parser.AgentType][]string{
-		parser.AgentQwenPaw: {qwenPawRoot},
-		parser.AgentClaude:  {remote.dir},
-	}}
+	require.NoError(t, os.WriteFile(stalePath, []byte(usageBody), 0o644))
+	require.NoError(t, os.Chtimes(stalePath, mtime.Add(time.Second), mtime.Add(time.Second)))
 
-	dataDir := t.TempDir()
-	database, hs := newMirrorSync(t, remote, dataDir)
+	qwenPawRoot := filepath.Join(filepath.Dir(remote.dir), "qwenpaw")
+	brokenDir := filepath.Join(qwenPawRoot, "default", "sessions")
+	require.NoError(t, os.MkdirAll(brokenDir, 0o755))
+	brokenPath := filepath.Join(brokenDir, "broken.json")
+	require.NoError(t, os.WriteFile(brokenPath, []byte("{not valid json"), 0o644))
+	require.NoError(t, os.Chtimes(brokenPath, mtime, mtime))
+	remote.targets.Dirs[parser.AgentQwenPaw] = []string{qwenPawRoot}
+
 	hs.Full = true
 	hs.FullReason = FullImportDataRebuild
-	journalPath := mirrorJournalPath(MirrorDir(dataDir, hs.Host))
-	require.NoError(t, replaceMirrorChangeJournal(journalPath, MirrorChangeJournal{
-		Version:          mirrorJournalVersion,
-		FullImport:       true,
-		FullImportReason: FullImportJournalRecovery,
-		InvalidateAll:    true,
-	}))
 	engine := syncpkg.NewEngine(database, syncpkg.EngineConfig{})
 	t.Cleanup(engine.Close)
-
 	first, err := hs.Prepare(t.Context())
 	require.NoError(t, err)
 	firstContributor, err := first.RebuildContributor()
 	require.NoError(t, err)
-	assert.False(t, firstContributor.ForceParse)
-	assert.True(t, firstContributor.ForceFullParseAfterCache,
-		"automatic rebuilds must fully parse sources without durable attempt state")
 	firstStats, err := engine.ResyncAllWithOptions(
 		t.Context(), nil,
 		syncpkg.RebuildOptions{Contributors: []syncpkg.RebuildContributor{
@@ -1540,13 +1530,17 @@ func TestHTTPSyncUnifiedRebuildPreservesAttemptCacheForReplay(t *testing.T) {
 	assert.True(t, firstStats.Aborted)
 	assert.Positive(t, firstStats.Failed)
 	require.NoError(t, first.Close())
-	assert.FileExists(t, journalPath)
 
-	remoteCache, err := database.LoadRemoteSkippedFiles(hs.Host)
+	failedCache, err := database.LoadRemoteSkippedFiles(hs.Host)
 	require.NoError(t, err)
-	require.NotEmpty(t, remoteCache,
-		"a failed contributor must persist new skip state before the replacement database is discarded")
+	for key := range failedCache {
+		path, _ := syncpkg.SplitProviderSkipCachePath(key)
+		assert.NotEqual(t, stalePath, path,
+			"a parser exclusion committed only to the discarded database is not retry-safe")
+	}
 
+	delete(remote.targets.Dirs, parser.AgentQwenPaw)
+	require.NoError(t, os.RemoveAll(qwenPawRoot))
 	second, err := hs.Prepare(t.Context())
 	require.NoError(t, err)
 	secondContributor, err := second.RebuildContributor()
@@ -1558,12 +1552,15 @@ func TestHTTPSyncUnifiedRebuildPreservesAttemptCacheForReplay(t *testing.T) {
 		}},
 	)
 	require.NoError(t, err)
-	assert.True(t, secondStats.Aborted)
-	assert.Positive(t, secondStats.Failed)
-	assert.Positive(t, secondStats.Skipped,
-		"an automatic rebuild retry must consume cache state from the aborted attempt")
+	assert.False(t, secondStats.Aborted)
+	assert.Zero(t, secondStats.Failed)
+	require.NoError(t, second.Commit())
 	require.NoError(t, second.Close())
-	assert.FileExists(t, journalPath)
+
+	stored, err := database.GetSessionFull(t.Context(), "devbox~stale")
+	require.NoError(t, err)
+	assert.Nil(t, stored,
+		"retry must apply the parser exclusion instead of orphan-copying the stale row")
 }
 
 func TestHTTPSyncAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T) {

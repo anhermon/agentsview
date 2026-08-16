@@ -373,6 +373,19 @@ func (pending *PreparedDeltaImport) persistSkipCache(
 	return nil
 }
 
+func (pending *PreparedDeltaImport) persistRetrySafeSkipCache(
+	database *db.DB,
+	engine *syncpkg.Engine,
+) error {
+	remoteCache := remoteRetrySafeEngineSkipCache(engine, pending.layout.paths)
+	if err := database.ReplaceRemoteSkippedFiles(
+		pending.layout.paths.host, remoteCache,
+	); err != nil {
+		return fmt.Errorf("save retry-safe skip cache: %w", err)
+	}
+	return nil
+}
+
 type plannedRemoteSkipCacheScope struct {
 	exact    map[string]map[parser.AgentType]struct{}
 	fallback map[parser.AgentType][]string

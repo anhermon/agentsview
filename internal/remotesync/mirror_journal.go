@@ -17,13 +17,9 @@ import (
 )
 
 const (
-	mirrorJournalVersion            = 5
-	mirrorJournalLegacyVersion      = 1
-	mirrorJournalForceIntentVersion = 2
-	mirrorJournalAttemptVersion     = 3
-	mirrorJournalCacheReadyVersion  = 4
-	mirrorJournalMaxEntries         = 8192
-	mirrorJournalMaxPathBytes       = 2 << 20
+	mirrorJournalVersion      = 1
+	mirrorJournalMaxEntries   = 8192
+	mirrorJournalMaxPathBytes = 2 << 20
 )
 
 func (reason FullImportReason) Valid() bool {
@@ -61,16 +57,15 @@ type MirrorChangeEntry struct {
 }
 
 type MirrorChangeJournal struct {
-	Version                     int                           `json:"version"`
-	FullImport                  bool                          `json:"full_import,omitempty"`
-	FullImportReason            FullImportReason              `json:"full_import_reason,omitempty"`
-	InvalidateAll               bool                          `json:"invalidate_all,omitempty"`
-	ForceFullParseAll           bool                          `json:"force_full_parse_all,omitempty"`
-	RequiredDataVersion         int                           `json:"required_data_version,omitempty"`
-	DataRebuildCacheVersion     int                           `json:"data_rebuild_cache_version,omitempty"`
-	LegacyDataRebuildCacheReady bool                          `json:"data_rebuild_cache_ready,omitempty"`
-	FileScopedDirs              map[parser.AgentType][]string `json:"file_scoped_dirs,omitempty"`
-	Entries                     []MirrorChangeEntry           `json:"entries,omitempty"`
+	Version                 int                           `json:"version"`
+	FullImport              bool                          `json:"full_import,omitempty"`
+	FullImportReason        FullImportReason              `json:"full_import_reason,omitempty"`
+	InvalidateAll           bool                          `json:"invalidate_all,omitempty"`
+	ForceFullParseAll       bool                          `json:"force_full_parse_all,omitempty"`
+	RequiredDataVersion     int                           `json:"required_data_version,omitempty"`
+	DataRebuildCacheVersion int                           `json:"data_rebuild_cache_version,omitempty"`
+	FileScopedDirs          map[parser.AgentType][]string `json:"file_scoped_dirs,omitempty"`
+	Entries                 []MirrorChangeEntry           `json:"entries,omitempty"`
 }
 
 type JournalMergeStats struct {
@@ -292,11 +287,7 @@ func loadMirrorChangeJournal(path string) (MirrorChangeJournal, error) {
 			"%w: decode %q: %v", ErrMalformedMirrorJournal, path, err,
 		)
 	}
-	if header.Version != mirrorJournalVersion &&
-		header.Version != mirrorJournalCacheReadyVersion &&
-		header.Version != mirrorJournalAttemptVersion &&
-		header.Version != mirrorJournalForceIntentVersion &&
-		header.Version != mirrorJournalLegacyVersion {
+	if header.Version != mirrorJournalVersion {
 		return MirrorChangeJournal{}, fmt.Errorf(
 			"%w: version %d", ErrUnsupportedMirrorJournal, header.Version,
 		)
@@ -315,28 +306,6 @@ func loadMirrorChangeJournal(path string) (MirrorChangeJournal, error) {
 			"%w: decode %q: %v", ErrMalformedMirrorJournal, path, err,
 		)
 	}
-	if journal.Version == mirrorJournalLegacyVersion {
-		if journal.FileScopedDirs != nil {
-			return MirrorChangeJournal{}, fmt.Errorf(
-				"%w: validate %q: legacy journal has file-scoped ownership",
-				ErrMalformedMirrorJournal, path,
-			)
-		}
-	}
-	if journal.Version == mirrorJournalLegacyVersion ||
-		journal.Version == mirrorJournalForceIntentVersion {
-		if journal.FullImport {
-			journal.ForceFullParseAll = true
-		}
-		for i := range journal.Entries {
-			journal.Entries[i].ForceFullParse = true
-		}
-	}
-	// Version 4's boolean did not identify the parser generation that created
-	// the attempt cache. Treat it as untrusted so the next automatic rebuild
-	// establishes a versioned cache boundary.
-	journal.LegacyDataRebuildCacheReady = false
-	journal.Version = mirrorJournalVersion
 	if err := validateMirrorChangeJournal(journal); err != nil {
 		return MirrorChangeJournal{}, fmt.Errorf(
 			"%w: validate %q: %v", ErrMalformedMirrorJournal, path, err,

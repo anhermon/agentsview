@@ -273,7 +273,20 @@ func remoteEngineSkipCache(
 	engine *syncpkg.Engine,
 	paths remotePathMap,
 ) map[string]int64 {
-	snapshot := engine.SnapshotSkipCache()
+	return remoteTempSkipCache(engine.SnapshotSkipCache(), paths)
+}
+
+func remoteRetrySafeEngineSkipCache(
+	engine *syncpkg.Engine,
+	paths remotePathMap,
+) map[string]int64 {
+	return remoteTempSkipCache(engine.SnapshotRetrySafeSkipCache(), paths)
+}
+
+func remoteTempSkipCache(
+	snapshot map[string]int64,
+	paths remotePathMap,
+) map[string]int64 {
 	remoteCache := make(map[string]int64, len(snapshot))
 	for localKey, mtime := range snapshot {
 		localPath, suffix := syncpkg.SplitProviderSkipCachePath(localKey)

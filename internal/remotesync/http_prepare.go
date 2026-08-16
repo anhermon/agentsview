@@ -463,6 +463,21 @@ func (p *PreparedHTTP) RebuildContributor() (syncpkg.RebuildContributor, error) 
 		}
 		return nil
 	}
+	persistRetrySafeSkipCache := func(
+		engine *syncpkg.Engine, database *db.DB,
+	) error {
+		var err error
+		if p.mirrorImport != nil {
+			err = p.mirrorImport.pending.persistRetrySafeSkipCache(database, engine)
+		} else {
+			remoteCache := remoteRetrySafeEngineSkipCache(engine, layout.paths)
+			err = database.ReplaceRemoteSkippedFiles(layout.paths.host, remoteCache)
+		}
+		if err != nil {
+			return &rebuildCachePersistError{err: err}
+		}
+		return nil
+	}
 	persistSuccessfulImport := func(
 		engine *syncpkg.Engine, database *db.DB,
 	) error {
@@ -490,7 +505,7 @@ func (p *PreparedHTTP) RebuildContributor() (syncpkg.RebuildContributor, error) 
 			return transformHostProgress(p.sync.Host, progress)
 		},
 		AfterSync:    persistSuccessfulImport,
-		AfterFailure: persistSkipCache,
+		AfterFailure: persistRetrySafeSkipCache,
 	}
 	if p.mirrorImport != nil {
 		contributor.ForceParse = p.mirrorImport.pending.forceParse

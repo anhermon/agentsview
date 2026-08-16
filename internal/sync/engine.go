@@ -467,6 +467,11 @@ type Engine struct {
 	skipMu           gosync.RWMutex
 	skipCache        map[string]int64
 	skipFingerprints map[string]string
+	// retryUnsafeSkipPaths records sources whose successful processing changed
+	// exclusion or source-missing state in the current database. A rebuild that
+	// later fails discards those database changes, so its skip entries cannot be
+	// carried into the next attempt.
+	retryUnsafeSkipPaths map[string]struct{}
 	// skipHashKeys maps a source base path to its one current
 	// ?source_hash= cache key. It is built once when the cache loads so a
 	// watcher mutation never scans unrelated archive entries.
@@ -8853,6 +8858,9 @@ func (e *Engine) collectAndBatchWithOptions(
 			r.releaseRetention()
 			continue
 		}
+		if len(r.excludedSessionIDs) > 0 || len(r.sourceMissingMembers) > 0 {
+			e.markRetryUnsafeSkipSource(r.path)
+		}
 		for range r.providerFailureCount {
 			stats.RecordFailed()
 		}
@@ -11617,6 +11625,36 @@ func (e *Engine) SnapshotSkipCache() map[string]int64 {
 	out := make(map[string]int64, len(e.skipCache))
 	maps.Copy(out, e.skipCache)
 	return out
+}
+
+// SnapshotRetrySafeSkipCache returns cache state that can survive a failed
+// replacement-database rebuild. Entries for sources that changed exclusion or
+// source-missing state are omitted because those changes exist only in the
+// replacement database that will be discarded.
+func (e *Engine) SnapshotRetrySafeSkipCache() map[string]int64 {
+	e.skipMu.RLock()
+	defer e.skipMu.RUnlock()
+	out := make(map[string]int64, len(e.skipCache))
+	for key, mtime := range e.skipCache {
+		path, _ := SplitProviderSkipCachePath(key)
+		if _, unsafe := e.retryUnsafeSkipPaths[path]; unsafe {
+			continue
+		}
+		out[key] = mtime
+	}
+	return out
+}
+
+func (e *Engine) markRetryUnsafeSkipSource(path string) {
+	if path == "" {
+		return
+	}
+	e.skipMu.Lock()
+	if e.retryUnsafeSkipPaths == nil {
+		e.retryUnsafeSkipPaths = make(map[string]struct{})
+	}
+	e.retryUnsafeSkipPaths[path] = struct{}{}
+	e.skipMu.Unlock()
 }
 
 // persistSkipCache writes the in-memory skip cache to the
