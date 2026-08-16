@@ -43,6 +43,17 @@ type HTTPSync struct {
 	removeArchiveSpool      func(string) error
 }
 
+// forceParseRequested distinguishes an operator-requested full sync from a
+// complete source scan required by an automatic data rebuild. A blank reason
+// retains the historical meaning of Full for direct callers.
+func (hs HTTPSync) forceParseRequested() bool {
+	return hs.Full && (hs.FullReason == "" || hs.FullReason == FullImportExplicit)
+}
+
+func (hs HTTPSync) forceFullParseAfterCacheRequested() bool {
+	return hs.Full && !hs.forceParseRequested()
+}
+
 // PreparedCleanupError reports an operation failure while retaining a prepared
 // HTTP source whose cleanup still needs to be retried. RetryCleanup is safe to
 // call more than once. Error matching traverses the original operation and
@@ -106,12 +117,13 @@ func (hs HTTPSync) importRoot(
 	ctx context.Context, targets TargetSet, root string,
 ) (SyncStats, error) {
 	stats, err := Importer{
-		Host:                    hs.Host,
-		Full:                    hs.Full,
-		RequireComplete:         true,
-		DB:                      hs.DB,
-		BlockedResultCategories: hs.BlockedResultCategories,
-		Progress:                hs.Progress,
+		Host:                     hs.Host,
+		Full:                     hs.forceParseRequested(),
+		ForceFullParseAfterCache: hs.forceFullParseAfterCacheRequested(),
+		RequireComplete:          true,
+		DB:                       hs.DB,
+		BlockedResultCategories:  hs.BlockedResultCategories,
+		Progress:                 hs.Progress,
 	}.ImportExtracted(ctx, targets, root)
 	stats.FullReason = hs.FullReason
 	if stats.FullReason == "" {

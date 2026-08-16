@@ -38,8 +38,10 @@ func (outcome JournalOutcome) Valid() bool {
 }
 
 type DeltaImportRequest struct {
-	Journal    MirrorChangeJournal
-	FullReason FullImportReason
+	Journal                  MirrorChangeJournal
+	FullReason               FullImportReason
+	ForceParse               bool
+	ForceFullParseAfterCache bool
 }
 
 type CachePruneStats struct {
@@ -82,8 +84,9 @@ func (im Importer) PreparePending(
 	// invocation's explicit Full request bypasses durable failure skips. The
 	// journal's separate full-parse intent still bypasses freshness and
 	// incremental append for sources without a post-invalidation skip entry.
-	forceParse := im.Full
-	forceFullParse := request.Journal.ForceFullParseAll
+	forceParse := request.ForceParse
+	forceFullParse := request.Journal.ForceFullParseAll ||
+		request.ForceFullParseAfterCache
 	stats := SyncStats{
 		FullReason:     request.FullReason,
 		JournalOutcome: JournalAbortedBeforeProcessing,

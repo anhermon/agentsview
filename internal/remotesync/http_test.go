@@ -1479,6 +1479,8 @@ func TestHTTPSyncUnifiedRebuildPreservesAttemptCacheForReplay(t *testing.T) {
 
 	dataDir := t.TempDir()
 	database, hs := newMirrorSync(t, remote, dataDir)
+	hs.Full = true
+	hs.FullReason = FullImportDataRebuild
 	journalPath := mirrorJournalPath(MirrorDir(dataDir, hs.Host))
 	require.NoError(t, replaceMirrorChangeJournal(journalPath, MirrorChangeJournal{
 		Version:          mirrorJournalVersion,
@@ -1493,6 +1495,9 @@ func TestHTTPSyncUnifiedRebuildPreservesAttemptCacheForReplay(t *testing.T) {
 	require.NoError(t, err)
 	firstContributor, err := first.RebuildContributor()
 	require.NoError(t, err)
+	assert.False(t, firstContributor.ForceParse)
+	assert.True(t, firstContributor.ForceFullParseAfterCache,
+		"automatic rebuilds must fully parse sources without durable attempt state")
 	firstStats, err := engine.ResyncAllWithOptions(
 		t.Context(), nil,
 		syncpkg.RebuildOptions{Contributors: []syncpkg.RebuildContributor{
@@ -1524,9 +1529,98 @@ func TestHTTPSyncUnifiedRebuildPreservesAttemptCacheForReplay(t *testing.T) {
 	assert.True(t, secondStats.Aborted)
 	assert.Positive(t, secondStats.Failed)
 	assert.Positive(t, secondStats.Skipped,
-		"the retry must consume cache state produced by the aborted attempt")
+		"an automatic rebuild retry must consume cache state from the aborted attempt")
 	require.NoError(t, second.Close())
 	assert.FileExists(t, journalPath)
+}
+
+func TestHTTPSyncAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T) {
+	remote := newMirrorTestRemote(t)
+	rowlessPath := filepath.Join(remote.dir, "cache-project", "rowless.jsonl")
+	rowlessBody := testjsonl.ClaudeUserJSON(
+		"<command-name>/usage</command-name>\n"+
+			"<command-message>usage</command-message>\n"+
+			"<command-args></command-args>",
+		"2026-08-14T10:00:00Z",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rowlessPath), 0o755))
+	require.NoError(t, os.WriteFile(rowlessPath, []byte(rowlessBody), 0o644))
+	mtime := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(rowlessPath, mtime, mtime))
+
+	database, hs := newMirrorSync(t, remote, t.TempDir())
+	_, err := hs.Run(t.Context())
+	require.NoError(t, err)
+	cache, err := database.LoadRemoteSkippedFiles(hs.Host)
+	require.NoError(t, err)
+	require.NotEmpty(t, cache)
+
+	hs.Full = true
+	hs.FullReason = FullImportDataRebuild
+	prepared, err := hs.Prepare(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	contributor, err := prepared.RebuildContributor()
+	require.NoError(t, err)
+	assert.False(t, contributor.ForceParse)
+	assert.True(t, contributor.ForceFullParseAfterCache)
+	assert.NotEmpty(t, contributor.Config.InitialSkipCache)
+
+	engine := syncpkg.NewEngine(database, syncpkg.EngineConfig{})
+	t.Cleanup(engine.Close)
+	stats, err := engine.ResyncAllWithOptions(
+		t.Context(), nil, syncpkg.RebuildOptions{
+			Contributors: []syncpkg.RebuildContributor{contributor},
+		},
+	)
+	require.NoError(t, err)
+	assert.False(t, stats.Aborted)
+	assert.Zero(t, stats.Failed)
+	assert.Positive(t, stats.Skipped,
+		"automatic rebuilds must honor durable source-attempt entries")
+}
+
+func TestHTTPLegacyAutomaticDataRebuildFullParsesAfterAttemptCache(t *testing.T) {
+	remote := newMirrorTestRemote(t)
+	remote.manifestStatus = http.StatusNotImplemented
+	rowlessPath := filepath.Join(remote.dir, "cache-project", "rowless.jsonl")
+	rowlessBody := testjsonl.ClaudeUserJSON(
+		"<command-name>/usage</command-name>\n"+
+			"<command-message>usage</command-message>\n"+
+			"<command-args></command-args>",
+		"2026-08-14T10:00:00Z",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rowlessPath), 0o755))
+	require.NoError(t, os.WriteFile(rowlessPath, []byte(rowlessBody), 0o644))
+	mtime := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(rowlessPath, mtime, mtime))
+
+	database, hs := newMirrorSync(t, remote, t.TempDir())
+	_, err := hs.Run(t.Context())
+	require.NoError(t, err)
+
+	hs.Full = true
+	hs.FullReason = FullImportDataRebuild
+	prepared, err := hs.Prepare(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, prepared.Close()) })
+	contributor, err := prepared.RebuildContributor()
+	require.NoError(t, err)
+	assert.False(t, contributor.ForceParse)
+	assert.True(t, contributor.ForceFullParseAfterCache)
+	assert.NotEmpty(t, contributor.Config.InitialSkipCache)
+
+	engine := syncpkg.NewEngine(database, syncpkg.EngineConfig{})
+	t.Cleanup(engine.Close)
+	stats, err := engine.ResyncAllWithOptions(
+		t.Context(), nil, syncpkg.RebuildOptions{
+			Contributors: []syncpkg.RebuildContributor{contributor},
+		},
+	)
+	require.NoError(t, err)
+	assert.False(t, stats.Aborted)
+	assert.Zero(t, stats.Failed)
+	assert.Positive(t, stats.Skipped)
 }
 
 func TestHTTPExplicitFullForceParsesRetainedJournalFullImport(t *testing.T) {

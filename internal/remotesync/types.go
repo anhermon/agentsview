@@ -279,6 +279,7 @@ func (r *ArchiveRequest) UnmarshalJSON(data []byte) error {
 type Importer struct {
 	Host                      string
 	Full                      bool
+	ForceFullParseAfterCache  bool
 	RequireComplete           bool
 	DB                        *db.DB
 	BlockedResultCategories   []string

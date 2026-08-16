@@ -42,6 +42,10 @@ func (im Importer) ImportExtracted(
 	var engineStats syncpkg.SyncStats
 	if im.Full {
 		engineStats = engine.SyncAllForceParse(ctx, hostProgress(im.Host, im.Progress))
+	} else if im.ForceFullParseAfterCache {
+		engineStats = engine.SyncAllForceParseAfterCache(
+			ctx, hostProgress(im.Host, im.Progress),
+		)
 	} else {
 		engineStats = engine.SyncAll(ctx, hostProgress(im.Host, im.Progress))
 	}
@@ -187,15 +191,27 @@ func loadImportSkipCache(
 	engine *syncpkg.Engine,
 	layout importLayout,
 ) error {
+	translated, err := translatedImportSkipCache(database, host, layout)
+	if err != nil {
+		return err
+	}
+	engine.InjectSkipCache(translated)
+	return nil
+}
+
+func translatedImportSkipCache(
+	database *db.DB,
+	host string,
+	layout importLayout,
+) (map[string]int64, error) {
 	remoteCache, err := database.LoadRemoteSkippedFiles(host)
 	if err != nil {
-		return fmt.Errorf("load skip cache: %w", err)
+		return nil, fmt.Errorf("load skip cache: %w", err)
 	}
 	remoteCache = migrateVisualStudioCopilotRemoteSkips(database, host, remoteCache)
-	engine.InjectSkipCache(translateRemoteCacheToTemp(
+	return translateRemoteCacheToTemp(
 		remoteCache, layout.paths.remoteDirs, layout.paths.localDirs,
-	))
-	return nil
+	), nil
 }
 
 func hostProgress(host string, progress syncpkg.ProgressFunc) syncpkg.ProgressFunc {
