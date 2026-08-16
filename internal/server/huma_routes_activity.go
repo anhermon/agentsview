@@ -79,7 +79,12 @@ func (s *Server) humaActivityReport(
 	}
 	buildInputs, err := s.resolveActivityReportBuildInputs(ctx, selection)
 	if err != nil {
-		return nil, err
+		var responseErr *apiErrorResponse
+		if errors.As(err, &responseErr) && responseErr.Status >= 400 &&
+			responseErr.Status < 500 {
+			return nil, err
+		}
+		return nil, internalError("activity report setup", err)
 	}
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		var sse *SSEStream
@@ -104,12 +109,21 @@ func (s *Server) humaActivityReport(
 			ctx, selection, buildInputs, onProgress,
 		)
 		if buildErr != nil {
-			if streaming {
-				sse.SendJSON("error", map[string]string{"error": buildErr.Error()})
+			publicErr := internalError("activity report build", buildErr)
+			if publicErr == nil {
 				return
 			}
-			writeHumaJSON(hctx, http.StatusInternalServerError,
-				apiErrorResponse{Message: buildErr.Error()})
+			if streaming {
+				sse.SendJSON("error", map[string]string{"error": publicErr.Error()})
+				return
+			}
+			status := http.StatusInternalServerError
+			var responseErr *apiErrorResponse
+			if errors.As(publicErr, &responseErr) {
+				status = responseErr.Status
+			}
+			writeHumaJSON(hctx, status,
+				apiErrorResponse{Message: publicErr.Error()})
 			return
 		}
 		if streaming {

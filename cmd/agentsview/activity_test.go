@@ -67,6 +67,34 @@ func TestResolveActivityReportPagesSessionsWithDirectCursor(t *testing.T) {
 	assert.NotEqual(t, first.BySession[0].SessionID, second.BySession[0].SessionID)
 }
 
+func TestResolveActivityReportCursorPreservesPartialGeneration(t *testing.T) {
+	dataDir := setupExportGoldenDataDir(t)
+	database := dbtest.OpenTestDBAt(t, sessionsDBPath(dataDir))
+	database.SetCursorSecret(goldenCursorSecret)
+
+	now := goldenFixtureNow
+	oldNow := activityReportNow
+	activityReportNow = func() time.Time { return now }
+	t.Cleanup(func() { activityReportNow = oldNow })
+
+	base := ActivityReportConfig{
+		Preset: "day", Date: "2026-07-03", Timezone: "UTC",
+		SessionsLimit: 1,
+	}
+	first, err := resolveActivityReport(base, database)
+	require.NoError(t, err)
+	require.True(t, first.Partial)
+	require.NotEmpty(t, first.SessionsNextCursor)
+
+	now = now.Add(15 * time.Minute)
+	base.SessionsCursor = first.SessionsNextCursor
+	second, err := resolveActivityReport(base, database)
+	require.NoError(t, err)
+	assert.Equal(t, first.EffectiveEnd, second.EffectiveEnd)
+	assert.Equal(t, first.AsOf, second.AsOf)
+	assert.NotEqual(t, first.BySession[0].SessionID, second.BySession[0].SessionID)
+}
+
 func TestActivityReportCommand_HelpText(t *testing.T) {
 	cmd := newActivityReportCommand()
 	var buf bytes.Buffer

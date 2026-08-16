@@ -163,8 +163,9 @@ JSON stdout remains one machine-readable document. Use `--sessions-cursor` with
 the returned `sessions_next_cursor` to request a later page. In daemon mode,
 also pass the paired `report_id` as `--sessions-report-id`; this preserves the
 original generation when a current or partial range advances between commands.
-The same paging flags work with `--offline`; direct mode validates a signed
-cursor and deterministically recomputes the report before selecting that page.
+The same paging flags work with `--offline`; the signed direct-mode cursor
+carries the original resolved range and filters, then deterministically
+recomputes that generation before selecting the next page.
 
 See [CLI Reference](/commands/#agentsview-activity-report) and
 [Session API](/session-api/#activity-report) for flags and response shape.

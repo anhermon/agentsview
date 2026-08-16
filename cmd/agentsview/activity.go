@@ -264,13 +264,34 @@ func newActivityProgressPrinter(writer io.Writer) func(activity.Progress) {
 }
 
 type cliActivitySessionCursor struct {
-	Version   int                  `json:"v"`
-	Schema    int                  `json:"schema"`
-	Digest    string               `json:"digest"`
-	Offset    int                  `json:"offset"`
-	Sort      activity.SessionSort `json:"sort"`
-	Direction string               `json:"direction"`
-	Bucket    *int                 `json:"bucket,omitempty"`
+	Version   int                     `json:"v"`
+	Schema    int                     `json:"schema"`
+	Digest    string                  `json:"digest"`
+	Offset    int                     `json:"offset"`
+	Sort      activity.SessionSort    `json:"sort"`
+	Direction string                  `json:"direction"`
+	Bucket    *int                    `json:"bucket,omitempty"`
+	Query     cliActivityCursorQuery  `json:"query"`
+	Filter    cliActivityCursorFilter `json:"filter"`
+}
+
+type cliActivityCursorQuery struct {
+	Timezone      string              `json:"timezone"`
+	RangeStart    time.Time           `json:"range_start"`
+	RangeEnd      time.Time           `json:"range_end"`
+	EffectiveEnd  time.Time           `json:"effective_end"`
+	Partial       bool                `json:"partial"`
+	Bucket        activity.BucketSpec `json:"bucket"`
+	GapCapSeconds float64             `json:"gap_cap_seconds"`
+}
+
+type cliActivityCursorFilter struct {
+	Timezone         string `json:"timezone"`
+	Project          string `json:"project,omitempty"`
+	Agent            string `json:"agent,omitempty"`
+	Machine          string `json:"machine,omitempty"`
+	ExcludeOneShot   bool   `json:"exclude_one_shot"`
+	ExcludeAutomated bool   `json:"exclude_automated"`
 }
 
 func activitySessionPageOptions(cfg ActivityReportConfig) (activity.SessionPageOptions, error) {
@@ -308,6 +329,76 @@ func resolveActivityReportPriced(
 func resolveActivityReport(
 	cfg ActivityReportConfig, database *db.DB,
 ) (activity.Report, error) {
+	options, err := activitySessionPageOptions(cfg)
+	if err != nil {
+		return activity.Report{}, err
+	}
+
+	var q activity.Query
+	var f db.AnalyticsFilter
+	var cursor *cliActivitySessionCursor
+	if cfg.SessionsCursor != "" {
+		decoded, decodeErr := decodeCLIActivitySessionCursor(
+			database, cfg.SessionsCursor, options,
+		)
+		if decodeErr != nil {
+			return activity.Report{}, decodeErr
+		}
+		cursor = &decoded
+		q, f, err = decoded.selection()
+		if err != nil {
+			return activity.Report{}, fmt.Errorf("invalid sessions cursor")
+		}
+		options.Offset = decoded.Offset
+	} else {
+		q, f, err = resolveCLIActivitySelection(cfg)
+		if err != nil {
+			return activity.Report{}, err
+		}
+	}
+
+	var onProgress activity.ProgressFunc
+	if cfg.ProgressWriter != nil {
+		onProgress = newActivityProgressPrinter(cfg.ProgressWriter)
+	}
+	artifacts, err := database.BuildActivityReportArtifacts(
+		context.Background(), f, q, onProgress,
+	)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	digest, err := activity.ArtifactDigest(artifacts)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	if cursor != nil && cursor.Digest != digest {
+		return activity.Report{}, fmt.Errorf("invalid sessions cursor")
+	}
+	page, err := activity.PageSessions(artifacts.Sessions, artifacts.Membership, options)
+	if err != nil {
+		return activity.Report{}, err
+	}
+	report := artifacts.Report
+	report.BySession = page.Sessions
+	report.SessionsTotal = page.Total
+	if page.HasNext {
+		payload, marshalErr := json.Marshal(newCLIActivitySessionCursor(
+			digest, page.Next, options, q, f,
+		))
+		if marshalErr != nil {
+			return activity.Report{}, marshalErr
+		}
+		report.SessionsNextCursor, err = database.EncodeActivityReportToken(payload)
+		if err != nil {
+			return activity.Report{}, err
+		}
+	}
+	return report, nil
+}
+
+func resolveCLIActivitySelection(
+	cfg ActivityReportConfig,
+) (activity.Query, db.AnalyticsFilter, error) {
 	tz := cfg.Timezone
 	if tz == "" {
 		tz = localTimezone()
@@ -328,7 +419,7 @@ func resolveActivityReport(
 	}
 	q, err := activity.ResolveQuery(input, activityReportNow())
 	if err != nil {
-		return activity.Report{}, err
+		return activity.Query{}, db.AnalyticsFilter{}, err
 	}
 
 	f := db.AnalyticsFilter{
@@ -339,61 +430,76 @@ func resolveActivityReport(
 		ExcludeOneShot:   false,
 		ExcludeAutomated: false,
 	}
-	var onProgress activity.ProgressFunc
-	if cfg.ProgressWriter != nil {
-		onProgress = newActivityProgressPrinter(cfg.ProgressWriter)
-	}
-	artifacts, err := database.BuildActivityReportArtifacts(
-		context.Background(), f, q, onProgress,
-	)
+	return q, f, nil
+}
+
+func decodeCLIActivitySessionCursor(
+	database *db.DB,
+	token string,
+	options activity.SessionPageOptions,
+) (cliActivitySessionCursor, error) {
+	payload, err := database.DecodeActivityReportToken(token)
 	if err != nil {
-		return activity.Report{}, err
+		return cliActivitySessionCursor{}, fmt.Errorf("invalid sessions cursor: %w", err)
 	}
-	options, err := activitySessionPageOptions(cfg)
-	if err != nil {
-		return activity.Report{}, err
+	var cursor cliActivitySessionCursor
+	if err := json.Unmarshal(payload, &cursor); err != nil ||
+		cursor.Version != 2 || cursor.Schema != export.ActivityReportSchemaVersion ||
+		cursor.Offset < 0 || cursor.Digest == "" || cursor.Sort != options.Sort ||
+		cursor.Direction != options.Direction ||
+		!sameActivityBucket(cursor.Bucket, options.Bucket) {
+		return cliActivitySessionCursor{}, fmt.Errorf("invalid sessions cursor")
 	}
-	digest, err := activity.ArtifactDigest(artifacts)
-	if err != nil {
-		return activity.Report{}, err
+	return cursor, nil
+}
+
+func (cursor cliActivitySessionCursor) selection() (
+	activity.Query, db.AnalyticsFilter, error,
+) {
+	loc, err := time.LoadLocation(cursor.Query.Timezone)
+	if err != nil || cursor.Query.Timezone != cursor.Filter.Timezone {
+		return activity.Query{}, db.AnalyticsFilter{}, fmt.Errorf("invalid timezone")
 	}
-	if cfg.SessionsCursor != "" {
-		payload, decodeErr := database.DecodeActivityReportToken(cfg.SessionsCursor)
-		if decodeErr != nil {
-			return activity.Report{}, fmt.Errorf("invalid sessions cursor: %w", decodeErr)
-		}
-		var cursor cliActivitySessionCursor
-		if err := json.Unmarshal(payload, &cursor); err != nil ||
-			cursor.Version != 1 || cursor.Schema != export.ActivityReportSchemaVersion ||
-			cursor.Digest != digest || cursor.Sort != options.Sort ||
-			cursor.Direction != options.Direction ||
-			!sameActivityBucket(cursor.Bucket, options.Bucket) {
-			return activity.Report{}, fmt.Errorf("invalid sessions cursor")
-		}
-		options.Offset = cursor.Offset
+	q := activity.Query{
+		Timezone: cursor.Query.Timezone, Loc: loc,
+		RangeStart: cursor.Query.RangeStart, RangeEnd: cursor.Query.RangeEnd,
+		EffectiveEnd: cursor.Query.EffectiveEnd, Partial: cursor.Query.Partial,
+		Bucket: cursor.Query.Bucket, GapCapSeconds: cursor.Query.GapCapSeconds,
 	}
-	page, err := activity.PageSessions(artifacts.Sessions, artifacts.Membership, options)
-	if err != nil {
-		return activity.Report{}, err
+	if err := activity.ValidateResolvedQuery(q); err != nil {
+		return activity.Query{}, db.AnalyticsFilter{}, err
 	}
-	report := artifacts.Report
-	report.BySession = page.Sessions
-	report.SessionsTotal = page.Total
-	if page.HasNext {
-		payload, marshalErr := json.Marshal(cliActivitySessionCursor{
-			Version: 1, Schema: export.ActivityReportSchemaVersion,
-			Digest: digest, Offset: page.Next, Sort: options.Sort,
-			Direction: options.Direction, Bucket: options.Bucket,
-		})
-		if marshalErr != nil {
-			return activity.Report{}, marshalErr
-		}
-		report.SessionsNextCursor, err = database.EncodeActivityReportToken(payload)
-		if err != nil {
-			return activity.Report{}, err
-		}
+	f := db.AnalyticsFilter{
+		Timezone: cursor.Filter.Timezone, Project: cursor.Filter.Project,
+		Agent: cursor.Filter.Agent, Machine: cursor.Filter.Machine,
+		ExcludeOneShot:   cursor.Filter.ExcludeOneShot,
+		ExcludeAutomated: cursor.Filter.ExcludeAutomated,
 	}
-	return report, nil
+	return q, f, nil
+}
+
+func newCLIActivitySessionCursor(
+	digest string,
+	offset int,
+	options activity.SessionPageOptions,
+	q activity.Query,
+	f db.AnalyticsFilter,
+) cliActivitySessionCursor {
+	return cliActivitySessionCursor{
+		Version: 2, Schema: export.ActivityReportSchemaVersion,
+		Digest: digest, Offset: offset, Sort: options.Sort,
+		Direction: options.Direction, Bucket: options.Bucket,
+		Query: cliActivityCursorQuery{
+			Timezone: q.Timezone, RangeStart: q.RangeStart, RangeEnd: q.RangeEnd,
+			EffectiveEnd: q.EffectiveEnd, Partial: q.Partial,
+			Bucket: q.Bucket, GapCapSeconds: q.GapCapSeconds,
+		},
+		Filter: cliActivityCursorFilter{
+			Timezone: f.Timezone, Project: f.Project, Agent: f.Agent,
+			Machine: f.Machine, ExcludeOneShot: f.ExcludeOneShot,
+			ExcludeAutomated: f.ExcludeAutomated,
+		},
+	}
 }
 
 func sameActivityBucket(left, right *int) bool {
