@@ -108,6 +108,38 @@ func TestBuildCandidateArtifactsUsesSecondPrecisionMembership(t *testing.T) {
 	assert.InDelta(t, 0.9/60, artifacts.Report.Buckets[1].AgentMinutes, 1e-12)
 }
 
+func TestBuildCandidateArtifactsNormalizesFractionalCustomBucketBoundsForMembership(t *testing.T) {
+	query, err := ResolveQuery(QueryInput{
+		Preset: "custom", Timezone: "UTC", BucketOverride: "5m",
+		From: "2026-06-16T00:00:00.500Z", To: "2026-06-16T00:10:00.500Z",
+	}, fixedNow(t))
+	require.NoError(t, err)
+	p := paramsFromQuery(query)
+	events := []ActivityEvent{
+		{SessionID: "range-start", Ordinal: 1, Timestamp: "2026-06-16T00:00:00.600Z", Role: "user"},
+		{SessionID: "range-start", Ordinal: 2, Timestamp: "2026-06-16T00:00:00.900Z", Role: "assistant"},
+		{SessionID: "bucket-boundary", Ordinal: 1, Timestamp: "2026-06-16T00:05:00.100Z", Role: "user"},
+		{SessionID: "bucket-boundary", Ordinal: 2, Timestamp: "2026-06-16T00:05:00.900Z", Role: "assistant"},
+	}
+	candidates := PairActivityEvents(
+		events, p.RangeStart, p.EffectiveEnd, 5*time.Minute,
+	)
+
+	artifacts, err := BuildCandidateArtifacts(
+		context.Background(), p, nil, candidates, nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, artifacts.Report.Buckets, 2)
+	assert.Equal(t, "2026-06-16T00:00:00Z", artifacts.Report.Buckets[0].Start)
+	assert.Equal(t, "2026-06-16T00:05:00Z", artifacts.Report.Buckets[1].Start)
+	assert.True(t, artifacts.Membership["range-start"].Contains(0),
+		"the first serialized bucket includes a point at its start")
+	assert.False(t, artifacts.Membership["range-start"].Contains(1))
+	assert.False(t, artifacts.Membership["bucket-boundary"].Contains(0))
+	assert.True(t, artifacts.Membership["bucket-boundary"].Contains(1),
+		"a point at the serialized boundary belongs to the following bucket")
+}
+
 func TestAggregateCandidatesCarriesConcurrencyAcrossBucketBoundary(t *testing.T) {
 	p := baseParams(t, "2026-06-16", "UTC")
 	events := []ActivityEvent{

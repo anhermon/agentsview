@@ -202,6 +202,7 @@ func buildCandidateArtifactsFromSource(
 	usageIsSurvivorSet bool,
 ) (CandidateArtifacts, error) {
 	windows := rangeWindows(p)
+	membershipWindows := secondPrecisionWindows(windows)
 	report := newReport(p, windows)
 	report.Buckets = make([]Bucket, len(windows))
 	for i, window := range windows {
@@ -239,7 +240,8 @@ func buildCandidateArtifactsFromSource(
 		state.advance(iv.start)
 		state.open(iv)
 		foldCandidateInterval(
-			&report, windows, aggregates, membership, words, automatedBy, iv,
+			&report, windows, membershipWindows, aggregates, membership, words,
+			automatedBy, iv,
 		)
 		return nil
 	})
@@ -415,6 +417,7 @@ func (s *candidateSweep) recordBucketPeak() {
 func foldCandidateInterval(
 	report *Report,
 	windows []BucketWindow,
+	membershipWindows []BucketWindow,
 	aggregates map[string]*sessionIntervalAgg,
 	membership map[string]BucketMembership,
 	words int,
@@ -462,12 +465,26 @@ func foldCandidateInterval(
 	startSecond := iv.start.Truncate(time.Second)
 	endSecond := iv.end.Truncate(time.Second)
 	if startSecond.Equal(endSecond) {
-		bits.add(windowIndex(windows, startSecond))
+		bits.add(windowIndex(membershipWindows, startSecond))
 		return
 	}
-	for index := max(0, windowIndex(windows, startSecond)); index < len(windows) && windows[index].Start.Before(endSecond); index++ {
-		if startSecond.Before(windows[index].End) && endSecond.After(windows[index].Start) {
+	for index := max(0, windowIndex(membershipWindows, startSecond)); index < len(membershipWindows) && membershipWindows[index].Start.Before(endSecond); index++ {
+		if startSecond.Before(membershipWindows[index].End) && endSecond.After(membershipWindows[index].Start) {
 			bits.add(index)
 		}
 	}
+}
+
+// secondPrecisionWindows matches the RFC3339 bucket bounds exposed to clients.
+// Membership uses the same wire-level precision as the interval timestamps so
+// fractional custom-range anchors cannot shift a session between visible slots.
+func secondPrecisionWindows(windows []BucketWindow) []BucketWindow {
+	normalized := make([]BucketWindow, len(windows))
+	for index, window := range windows {
+		normalized[index] = BucketWindow{
+			Start: window.Start.Truncate(time.Second),
+			End:   window.End.Truncate(time.Second),
+		}
+	}
+	return normalized
 }
