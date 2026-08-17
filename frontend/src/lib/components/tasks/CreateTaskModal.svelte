@@ -51,7 +51,7 @@
       description: description.trim() || undefined,
       project: taskProject.trim(),
       type,
-      status: "backlog",
+      status: "Backlog",
     });
   }
 </script>

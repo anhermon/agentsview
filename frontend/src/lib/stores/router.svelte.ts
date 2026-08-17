@@ -15,6 +15,8 @@ export type Route =
   | "data"
   | "settings";
 
+export type TaskView = "board" | "detail" | "metrics";
+
 const VALID_ROUTES: ReadonlySet<string> = new Set<Route>([
   "sessions",
   "tasks",
@@ -44,6 +46,8 @@ export function getBasePath(): string {
 export function parsePath(): {
   route: Route;
   sessionId: string | null;
+  taskId: string | null;
+  taskView: TaskView;
   params: Record<string, string>;
   isRootPath: boolean;
 } {
@@ -64,6 +68,8 @@ export function parsePath(): {
     : DEFAULT_ROUTE;
 
   let sessionId: string | null = null;
+  let taskId: string | null = null;
+  let taskView: TaskView = "board";
   if (route === "sessions" && segments.length >= 2) {
     try {
       sessionId = decodeURIComponent(segments[1]!);
@@ -71,12 +77,24 @@ export function parsePath(): {
       sessionId = segments[1]!;
     }
   }
+  if (route === "tasks" && segments.length >= 2) {
+    if (segments[1] === "metrics") {
+      taskView = "metrics";
+    } else {
+      taskView = "detail";
+      try {
+        taskId = decodeURIComponent(segments[1]!);
+      } catch {
+        taskId = segments[1]!;
+      }
+    }
+  }
 
   const params = Object.fromEntries(
     new URLSearchParams(window.location.search),
   );
 
-  return { route, sessionId, params, isRootPath };
+  return { route, sessionId, taskId, taskView, params, isRootPath };
 }
 
 /** Params that are not part of routing but must survive navigations. */
@@ -86,6 +104,8 @@ export class RouterStore {
   route: Route = $state("sessions");
   params: Record<string, string> = $state({});
   sessionId: string | null = $state(null);
+  taskId: string | null = $state(null);
+  taskView: TaskView = $state("board");
   isRootPath: boolean = $state(false);
   #onPopState: () => void;
   #stickyParams: Record<string, string>;
@@ -95,6 +115,8 @@ export class RouterStore {
     this.route = initial.route;
     this.params = initial.params;
     this.sessionId = initial.sessionId;
+    this.taskId = initial.taskId;
+    this.taskView = initial.taskView;
     this.isRootPath = initial.isRootPath;
 
     this.#stickyParams = {};
@@ -109,6 +131,8 @@ export class RouterStore {
       this.route = parsed.route;
       this.params = parsed.params;
       this.sessionId = parsed.sessionId;
+      this.taskId = parsed.taskId;
+      this.taskView = parsed.taskView;
       this.isRootPath = parsed.isRootPath;
       this.#replaceSticky(parsed.params);
     };
@@ -212,6 +236,8 @@ export class RouterStore {
     this.route = route;
     this.params = { ...this.#stickyParams, ...params };
     this.sessionId = null;
+    this.taskId = null;
+    this.taskView = route === "tasks" ? "board" : this.taskView;
     this.isRootPath = false;
     window.history.pushState(null, "", url);
     return true;
@@ -226,8 +252,40 @@ export class RouterStore {
     this.route = route;
     this.params = { ...this.#stickyParams, ...params };
     this.sessionId = null;
+    this.taskId = null;
+    this.taskView = route === "tasks" ? "board" : this.taskView;
     this.isRootPath = false;
     window.history.replaceState(null, "", url);
+  }
+
+  buildTaskHref(id: string): string {
+    return this.#buildUrl(`/tasks/${encodeURIComponent(id)}`);
+  }
+
+  buildTaskMetricsHref(params: Record<string, string> = {}): string {
+    return this.#buildUrl("/tasks/metrics", params);
+  }
+
+  navigateToTask(id: string): void {
+    const url = this.buildTaskHref(id);
+    this.route = "tasks";
+    this.params = { ...this.#stickyParams };
+    this.sessionId = null;
+    this.taskId = id;
+    this.taskView = "detail";
+    this.isRootPath = false;
+    window.history.pushState(null, "", url);
+  }
+
+  navigateToTaskMetrics(params: Record<string, string> = {}): void {
+    const url = this.buildTaskMetricsHref(params);
+    this.route = "tasks";
+    this.params = { ...this.#stickyParams, ...params };
+    this.sessionId = null;
+    this.taskId = null;
+    this.taskView = "metrics";
+    this.isRootPath = false;
+    window.history.pushState(null, "", url);
   }
 
   navigateToSessions(
@@ -274,7 +332,11 @@ export class RouterStore {
   replaceParams(params: Record<string, string>) {
     const path = this.sessionId
       ? `/sessions/${encodeURIComponent(this.sessionId)}`
-      : `/${this.route}`;
+      : this.route === "tasks" && this.taskView === "metrics"
+        ? "/tasks/metrics"
+        : this.route === "tasks" && this.taskView === "detail" && this.taskId
+          ? `/tasks/${encodeURIComponent(this.taskId)}`
+          : `/${this.route}`;
     const url = this.#buildUrl(path, params);
     this.#updateSticky(params);
     this.params = { ...this.#stickyParams, ...params };

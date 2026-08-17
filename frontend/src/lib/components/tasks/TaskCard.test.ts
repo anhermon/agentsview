@@ -63,14 +63,17 @@ describe("TaskCard", () => {
       agents,
       previousStatus: "ready",
       nextStatus: "review",
+      href: "/tasks/task-1",
+      onopen: vi.fn(),
       onmove,
       onphase: vi.fn(),
       onassign: vi.fn(),
       ondragstart: vi.fn(),
     });
 
-    expect(screen.getByText("Ship event-driven board")).toBeTruthy();
+    expect(screen.getAllByText("Ship event-driven board").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Execute").length).toBeGreaterThan(0);
+    expect(document.querySelector('.phase-track [aria-current="step"]')?.getAttribute("title")).toBe("Execute");
     expect(screen.getByText("Focused checks pass")).toBeTruthy();
     expect(screen.getByText(/Live dogfood/)).toBeTruthy();
     expect(screen.getByText("1 active session")).toBeTruthy();
@@ -85,6 +88,8 @@ describe("TaskCard", () => {
       task,
       agents,
       nextStatus: "review",
+      href: "/tasks/task-1",
+      onopen: vi.fn(),
       onmove: vi.fn(),
       onphase,
       onassign: vi.fn(),
@@ -94,6 +99,25 @@ describe("TaskCard", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Select phase" }));
     await tick();
     await fireEvent.mouseDown(screen.getByRole("option", { name: "Verify" }));
-    expect(onphase).toHaveBeenCalledWith("verify");
+    expect(onphase).toHaveBeenCalledWith("Verify");
+  });
+
+  it("exposes the task detail as a keyboard-accessible link", async () => {
+    const onopen = vi.fn((event: MouseEvent) => event.preventDefault());
+    render(TaskCard, {
+      task,
+      agents,
+      href: "/tasks/task-1",
+      onopen,
+      onmove: vi.fn(),
+      onphase: vi.fn(),
+      onassign: vi.fn(),
+      ondragstart: vi.fn(),
+    });
+
+    const link = screen.getByRole("link", { name: "Open task Ship event-driven board" });
+    expect(link.getAttribute("href")).toBe("/tasks/task-1");
+    await fireEvent.click(link);
+    expect(onopen).toHaveBeenCalledOnce();
   });
 });

@@ -63,12 +63,12 @@
 
   function defaultColumns(): TaskWorkflowColumn[] {
     return [
-      { id: "backlog", label: m.tasks_status_backlog(), position: 0 },
-      { id: "ready", label: m.tasks_status_ready(), position: 1 },
-      { id: "in_progress", label: m.tasks_status_in_progress(), position: 2 },
-      { id: "blocked", label: m.tasks_status_blocked(), position: 3 },
-      { id: "review", label: m.tasks_status_review(), position: 4 },
-      { id: "done", label: m.tasks_status_done(), position: 5 },
+      { id: "Backlog", label: m.tasks_status_backlog(), position: 0 },
+      { id: "Ready", label: m.tasks_status_ready(), position: 1 },
+      { id: "In Progress", label: m.tasks_status_in_progress(), position: 2 },
+      { id: "Blocked", label: m.tasks_status_blocked(), position: 3 },
+      { id: "Review", label: m.tasks_status_review(), position: 4 },
+      { id: "Done", label: m.tasks_status_done(), position: 5 },
     ];
   }
 
@@ -76,7 +76,7 @@
     return {
       project: forProject,
       columns: defaultColumns(),
-      phases: ["understand", "plan", "execute", "verify", "deliver"],
+      phases: ["Understand", "Plan", "Execute", "Verify", "Deliver"],
       automatic_transitions_enabled: false,
     };
   }
@@ -93,8 +93,8 @@
     }
   }
 
-  async function load(): Promise<void> {
-    loading = true;
+  async function load(showLoading = true): Promise<void> {
+    if (showLoading) loading = true;
     error = null;
     try {
       const [nextTasks, nextAgents] = await Promise.all([fetchTasks(), fetchTaskAgents()]);
@@ -114,7 +114,7 @@
   onMount(() => {
     void load();
     const events = watchEvents((event) => {
-      if (event.scope === "tasks") void load();
+      if (event.scope === "tasks") void load(false);
     });
     return () => events.close();
   });
@@ -203,6 +203,12 @@
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
   }
 
+  function openTask(event: MouseEvent, taskId: string): void {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    router.navigateToTask(taskId);
+  }
+
   function dragOver(event: DragEvent, status: string): void {
     event.preventDefault();
     dragTargetStatus = status;
@@ -236,6 +242,12 @@
       <p>{m.tasks_description()}</p>
     </div>
     <div class="header-actions">
+      <Button
+        label={m.tasks_metrics()}
+        tone="neutral"
+        surface="outline"
+        onclick={() => router.navigateToTaskMetrics()}
+      />
       <Button
         label={m.tasks_manage_agents()}
         tone="neutral"
@@ -296,7 +308,7 @@
     <div class="center-state"><Spinner size={22} /> <span>{m.tasks_loading()}</span></div>
   {:else if error}
     <EmptyState title={m.tasks_load_failed()} description={error}>
-      <Button label={m.tasks_retry()} tone="info" surface="solid" onclick={load} />
+      <Button label={m.tasks_retry()} tone="info" surface="solid" onclick={() => load()} />
     </EmptyState>
   {:else}
     <div class="board" aria-label={m.tasks_board_label()}>
@@ -322,6 +334,8 @@
                 <TaskCard
                   {task}
                   {agents}
+                  href={router.buildTaskHref(task.id)}
+                  onopen={(event) => openTask(event, task.id)}
                   busy={busyTaskIds.includes(task.id)}
                   previousStatus={adjacentStatus(task.status, -1)}
                   nextStatus={adjacentStatus(task.status, 1)}

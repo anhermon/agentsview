@@ -16,6 +16,8 @@
     previousStatus?: string;
     nextStatus?: string;
     busy?: boolean;
+    href: string;
+    onopen: (event: MouseEvent) => void;
     onmove: (status: string) => void;
     onphase: (phase: string) => void;
     onassign: (agentId: string | null) => void;
@@ -28,14 +30,16 @@
     previousStatus,
     nextStatus,
     busy = false,
+    href,
+    onopen,
     onmove,
     onphase,
     onassign,
     ondragstart,
   }: Props = $props();
 
-  const phases = ["understand", "plan", "execute", "verify", "deliver"];
-  const phaseIndex = $derived(Math.max(0, phases.indexOf(task.phase)));
+  const phases = ["Understand", "Plan", "Execute", "Verify", "Deliver"];
+  const phaseIndex = $derived(Math.max(0, phases.findIndex((phase) => phase.toLowerCase() === task.phase.toLowerCase())));
   const passedGates = $derived(task.gates?.filter((gate) => gate.status === "passed").length ?? 0);
   const failedGates = $derived(task.gates?.filter((gate) => gate.status === "failed") ?? []);
   const evidence = $derived(task.evidence?.slice(0, 2) ?? []);
@@ -66,11 +70,11 @@
   );
 
   function phaseLabel(phase: string): string {
-    if (phase === "understand") return m.tasks_phase_understand();
-    if (phase === "plan") return m.tasks_phase_plan();
-    if (phase === "execute") return m.tasks_phase_execute();
-    if (phase === "verify") return m.tasks_phase_verify();
-    if (phase === "deliver") return m.tasks_phase_deliver();
+    if (phase.toLowerCase() === "understand") return m.tasks_phase_understand();
+    if (phase.toLowerCase() === "plan") return m.tasks_phase_plan();
+    if (phase.toLowerCase() === "execute") return m.tasks_phase_execute();
+    if (phase.toLowerCase() === "verify") return m.tasks_phase_verify();
+    if (phase.toLowerCase() === "deliver") return m.tasks_phase_deliver();
     return phase;
   }
 
@@ -119,6 +123,9 @@
   aria-label={task.title}
   data-task-id={task.id}
 >
+  <a class="card-link" {href} onclick={onopen} aria-label={m.tasks_open_task({ title: task.title })}>
+    <span class="kit-sr-only">{task.title}</span>
+  </a>
   <div class="card-topline">
     <Chip size="xs" uppercase={false}>{typeLabel(task.type)}</Chip>
     <span class="activity">
@@ -243,6 +250,7 @@
 
 <style>
   .task-card {
+    position: relative;
     display: flex;
     min-width: 0;
     flex-direction: column;
@@ -253,6 +261,29 @@
     border-radius: 12px;
     box-shadow: var(--shadow-xs);
     cursor: grab;
+  }
+
+  .card-link {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    border-radius: inherit;
+  }
+
+  .card-link:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  .task-card > :not(.card-link) {
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .task-card :global(button),
+  .task-card :global(input) {
+    pointer-events: auto;
   }
 
   .task-card:active {

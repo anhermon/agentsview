@@ -9,6 +9,10 @@ import type {
   CreateTaskRequest,
   Task,
   TaskAgent,
+  TaskDetail,
+  TaskMetricFilters,
+  TaskMetrics,
+  TaskSessionPreviewMessage,
   TaskWorkflow,
   UpdateTaskRequest,
 } from "./types/tasks.js";
@@ -45,6 +49,25 @@ function entity<T>(value: T | { task?: T; agent?: T }): T {
 
 export async function fetchTasks(): Promise<Task[]> {
   return collection(await request<Task[] | { items?: Task[]; tasks?: Task[] }>("/tasks"));
+}
+
+export function fetchTask(id: string): Promise<TaskDetail> {
+  return request(`/tasks/${encodeURIComponent(id)}`);
+}
+
+export function fetchTaskMetrics(filters: TaskMetricFilters = {}): Promise<TaskMetrics> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value);
+  }
+  const query = params.toString();
+  return request(`/task-metrics${query ? `?${query}` : ""}`);
+}
+
+export async function fetchTaskSessionPreview(url: string): Promise<TaskSessionPreviewMessage[]> {
+  const apiPath = url.startsWith("/api/v1/") ? url.slice("/api/v1".length) : url;
+  const value = await request<{ messages?: TaskSessionPreviewMessage[] | null }>(apiPath);
+  return value.messages ?? [];
 }
 
 export async function createTask(input: CreateTaskRequest): Promise<Task> {

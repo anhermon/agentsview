@@ -3,6 +3,9 @@ import {
   createTask,
   createTaskAgent,
   fetchTaskAgents,
+  fetchTask,
+  fetchTaskMetrics,
+  fetchTaskSessionPreview,
   fetchTasks,
   fetchTaskWorkflow,
   updateTask,
@@ -75,5 +78,22 @@ describe("task API", () => {
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/task-agents");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/task-workflows/repo%20%2F%20app");
+  });
+
+  it("loads task detail, filtered metrics, and a bounded linked session preview", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ id: "task / 1", events: [], timing: {}, gate_summary: {} }))
+      .mockResolvedValueOnce(json({ total_tasks: 0, counts: {}, timing: {}, gates: {} }))
+      .mockResolvedValueOnce(json({ messages: [{ id: 1, role: "assistant", content: "Running tests" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchTask("task / 1");
+    await fetchTaskMetrics({ project: "agents view", phase: "Verify", from: "2026-08-01T00:00:00.000Z" });
+    await expect(fetchTaskSessionPreview("/api/v1/sessions/s1/messages?limit=20&direction=desc"))
+      .resolves.toEqual([{ id: 1, role: "assistant", content: "Running tests" }]);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/tasks/task%20%2F%201");
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("/api/v1/task-metrics?project=agents+view&phase=Verify&from=");
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/v1/sessions/s1/messages?limit=20&direction=desc");
   });
 });

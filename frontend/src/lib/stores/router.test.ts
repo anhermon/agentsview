@@ -55,6 +55,18 @@ describe("parsePath", () => {
     expect(result.params).toEqual({});
   });
 
+  it("parses task detail and metrics routes", () => {
+    setURL("/tasks/task%20%2F%201");
+    expect(parsePath()).toEqual(expect.objectContaining({
+      route: "tasks", taskView: "detail", taskId: "task / 1",
+    }));
+
+    setURL("/tasks/metrics?phase=Verify");
+    expect(parsePath()).toEqual(expect.objectContaining({
+      route: "tasks", taskView: "metrics", taskId: null, params: { phase: "Verify" },
+    }));
+  });
+
   it("parses /sessions/{id} with msg param", () => {
     setURL("/sessions/abc-123?msg=5");
     const result = parsePath();
@@ -208,6 +220,22 @@ describe("RouterStore", () => {
     expect(store.route).toBe("quality");
     expect(store.isRootPath).toBe(false);
     spy.mockRestore();
+  });
+
+  it("navigates to task detail and metrics while preserving nested filter paths", () => {
+    setURL("/tasks");
+    store = new RouterStore();
+    store.navigateToTask("task / 1");
+    expect(window.location.pathname).toBe("/tasks/task%20%2F%201");
+    expect(store.taskView).toBe("detail");
+    expect(store.taskId).toBe("task / 1");
+
+    store.navigateToTaskMetrics({ phase: "Verify" });
+    expect(window.location.pathname).toBe("/tasks/metrics");
+    expect(window.location.search).toBe("?phase=Verify");
+    store.replaceParams({ type: "feature" });
+    expect(window.location.pathname).toBe("/tasks/metrics");
+    expect(window.location.search).toBe("?type=feature");
   });
 
   it.each([
