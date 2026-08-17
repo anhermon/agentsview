@@ -120,6 +120,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newDuckDBCommand())
 	root.AddCommand(newEmbeddingsCommand())
 	root.AddCommand(newSessionCommand())
+	root.AddCommand(newTaskCommand())
 	root.AddCommand(newMCPCommand())
 	root.AddCommand(newRecallCommand())
 	root.AddCommand(newStatsCommand())

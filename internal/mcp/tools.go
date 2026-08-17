@@ -1,6 +1,5 @@
-// ABOUTME: The six read-only MCP tools, implemented as thin adapters
-// ABOUTME: over service.SessionService (the same seam the CLI and HTTP
-// ABOUTME: handlers use).
+// ABOUTME: Thin MCP adapters over the session service and optional task
+// ABOUTME: service capabilities shared with the CLI and HTTP APIs.
 package mcp
 
 import (
@@ -12,13 +11,15 @@ import (
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/taskcontrol"
 )
 
 // toolset holds the dependencies shared by every tool handler. now is
 // injectable so tests can control the self-reference exclusion window.
 type toolset struct {
-	svc service.SessionService
-	now func() time.Time
+	svc     service.SessionService
+	taskSvc taskcontrol.TaskService
+	now     func() time.Time
 }
 
 func (t *toolset) clock() time.Time {

@@ -21,6 +21,7 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 	mcpserver "go.kenn.io/agentsview/internal/mcp"
 	"go.kenn.io/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/taskcontrol"
 )
 
 func newMCPCommand() *cobra.Command {
@@ -29,12 +30,15 @@ func newMCPCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Run an MCP server exposing read-only session retrieval tools",
+		Short: "Run an MCP server exposing session retrieval and task tools",
 		Long: `Start an MCP (Model Context Protocol) server over stdio (default) or
-StreamableHTTP, exposing read-only tools for searching and reading
-recorded agent sessions: search_sessions, list_sessions,
+StreamableHTTP, exposing tools for searching and reading recorded agent
+sessions, plus compact task-board updates when using a daemon:
+search_sessions, list_sessions,
 get_session_overview, get_messages, search_content, and
 get_usage_summary, plus query_recall for distilled session knowledge.
+Daemon-backed servers also expose list_tasks, get_task, update_task,
+record_task_event, and complete_task.
 
 The server reads through the daemon path. By default each tool call talks to
 the local agentsview daemon, starting it when needed so a long-lived MCP server
@@ -68,6 +72,9 @@ Add to your MCP client config (e.g. Claude Desktop):
 			defer stop()
 
 			opts := mcpserver.ServeOptions{Service: svc, Version: version}
+			if taskSvc, ok := svc.(taskcontrol.TaskService); ok {
+				opts.TaskService = taskSvc
+			}
 
 			var serveErr error
 			if httpAddr != "" {
@@ -156,8 +163,10 @@ func resolveMCPService(
 		if err != nil {
 			return nil, nil, err
 		}
-		return service.NewHTTPBackendForServer(remote, token, capabilities),
-			func() {}, nil
+		return &mcpRemoteService{
+			SessionService: service.NewHTTPBackendForServer(remote, token, capabilities),
+			TaskService:    taskcontrol.NewHTTPClient(remote, token),
+		}, func() {}, nil
 	}
 	cfg, err := config.LoadPFlags(cmd.Flags())
 	if err != nil {
@@ -176,6 +185,15 @@ func resolveMCPService(
 type mcpDaemonService struct {
 	mu  sync.Mutex
 	cfg config.Config
+}
+
+type mcpRemoteService struct {
+	service.SessionService
+	taskcontrol.TaskService
+}
+
+func (s *mcpRemoteService) SupportsRecallQueries() bool {
+	return service.SupportsRecallQueries(s.SessionService)
 }
 
 func newMCPDaemonService(cfg config.Config) service.SessionService {
@@ -210,6 +228,88 @@ func (s *mcpDaemonService) daemonService(
 	}
 	s.cfg.AuthToken = cfg.AuthToken
 	return service.NewHTTPBackend(tr.URL, cfg.AuthToken, tr.ReadOnly), nil
+}
+
+func (s *mcpDaemonService) taskAPI(
+	ctx context.Context,
+) (taskcontrol.TaskService, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cfg := s.cfg
+	tr, err := ensureTransportContext(
+		ctx, &cfg, transportIntentArchiveWrite, 0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if tr.Mode != transportHTTP {
+		return nil, errors.New(
+			"agentsview mcp tasks require a daemon; refusing direct task database access",
+		)
+	}
+	s.cfg.AuthToken = cfg.AuthToken
+	return taskcontrol.NewHTTPClient(tr.URL, cfg.AuthToken), nil
+}
+
+func (s *mcpDaemonService) ListTasks(
+	ctx context.Context, project string,
+) ([]taskcontrol.Task, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return svc.ListTasks(ctx, project)
+}
+
+func (s *mcpDaemonService) GetTask(
+	ctx context.Context, id string,
+) (taskcontrol.Task, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return taskcontrol.Task{}, err
+	}
+	return svc.GetTask(ctx, id)
+}
+
+func (s *mcpDaemonService) CreateTask(
+	ctx context.Context, task taskcontrol.Task,
+) (taskcontrol.Task, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return taskcontrol.Task{}, err
+	}
+	return svc.CreateTask(ctx, task)
+}
+
+func (s *mcpDaemonService) UpdateTask(
+	ctx context.Context, id string, patch taskcontrol.TaskPatch,
+) (taskcontrol.Task, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return taskcontrol.Task{}, err
+	}
+	return svc.UpdateTask(ctx, id, patch)
+}
+
+func (s *mcpDaemonService) AppendTaskEvent(
+	ctx context.Context, event taskcontrol.TaskEvent,
+) (taskcontrol.TaskEvent, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return taskcontrol.TaskEvent{}, err
+	}
+	return svc.AppendTaskEvent(ctx, event)
+}
+
+func (s *mcpDaemonService) CompleteTask(
+	ctx context.Context, id, status, phase string,
+) (taskcontrol.Task, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return taskcontrol.Task{}, err
+	}
+	return svc.CompleteTask(ctx, id, status, phase)
 }
 
 func (s *mcpDaemonService) Get(

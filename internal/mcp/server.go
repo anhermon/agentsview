@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"go.kenn.io/agentsview/internal/service"
+	"go.kenn.io/agentsview/internal/taskcontrol"
 )
 
 // Tool names. The same constant is used to register a tool and to refer
@@ -28,6 +29,11 @@ const (
 	ToolGetMessages        = "get_messages"
 	ToolSearchContent      = "search_content"
 	ToolGetUsageSummary    = "get_usage_summary"
+	ToolListTasks          = "list_tasks"
+	ToolGetTask            = "get_task"
+	ToolUpdateTask         = "update_task"
+	ToolRecordTaskEvent    = "record_task_event"
+	ToolCompleteTask       = "complete_task"
 )
 
 // ServeOptions configures the MCP server. Service is required; Version is
@@ -36,8 +42,11 @@ const (
 // time.Now).
 type ServeOptions struct {
 	Service service.SessionService
-	Version string
-	Now     func() time.Time
+	// TaskService is optional. When present, five compact task-board tools are
+	// registered without widening the existing SessionService contract.
+	TaskService taskcontrol.TaskService
+	Version     string
+	Now         func() time.Time
 	// Token, when non-empty, requires every StreamableHTTP request to
 	// carry "Authorization: Bearer <Token>". It has no effect on stdio.
 	// The command layer sets it for non-loopback HTTP binds so the
@@ -58,7 +67,7 @@ func newServer(opts ServeOptions) *mcp.Server {
 		Version: version,
 	}, nil)
 
-	t := &toolset{svc: opts.Service, now: opts.Now}
+	t := &toolset{svc: opts.Service, taskSvc: opts.TaskService, now: opts.Now}
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -129,6 +138,26 @@ func newServer(opts ServeOptions) *mcp.Server {
 			"filterable by project, agent, machine, and date range.",
 		Annotations: readOnly,
 	}, t.usageSummary)
+
+	if opts.TaskService != nil {
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolListTasks, Description: "List compact task-board records, optionally filtered by project.",
+			Annotations: readOnly,
+		}, t.listTasks)
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetTask, Description: "Get one task's current assignment, workflow state, and phase.",
+			Annotations: readOnly,
+		}, t.getTask)
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolUpdateTask, Description: "Update assignment, active run, status, phase, priority, or task metadata.",
+		}, t.updateTask)
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolRecordTaskEvent, Description: "Append a structured progress or lifecycle event to a task.",
+		}, t.recordTaskEvent)
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolCompleteTask, Description: "Move a task to its terminal state; required completion gates must already pass.",
+		}, t.completeTask)
+	}
 
 	return s
 }

@@ -42,7 +42,7 @@ type Task struct {
 	Project     string    `json:"project"`
 	Title       string    `json:"title"`
 	Description string    `json:"description,omitempty"`
-	TaskType    string    `json:"task_type,omitempty"`
+	TaskType    string    `json:"type,omitempty"`
 	Status      string    `json:"status"`
 	Phase       string    `json:"phase"`
 	Priority    int       `json:"priority"`
