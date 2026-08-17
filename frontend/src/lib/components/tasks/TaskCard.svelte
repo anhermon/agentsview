@@ -296,18 +296,25 @@
   }
 
   .task-card.agent-active {
-    border-color: var(--accent-blue);
-    animation: agent-active-pulse 2s ease-in-out infinite;
+    animation: agent-active-pulse 1.8s ease-in-out infinite;
   }
 
   @keyframes agent-active-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-blue) 55%, transparent); }
-    50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-blue) 25%, transparent); }
+    0%, 100% {
+      border-color: color-mix(in srgb, var(--accent-blue) 55%, var(--bg-surface));
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 40%, transparent);
+    }
+    50% {
+      border-color: var(--accent-blue);
+      box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent-blue) 70%, transparent);
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
     .task-card.agent-active {
       animation: none;
+      border-color: var(--accent-blue);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 40%, transparent);
     }
   }
 
