@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(project, status, priority, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_metrics_created ON tasks(created_at, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_metrics_project ON tasks(project, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_metrics_status ON tasks(status, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_metrics_phase ON tasks(phase, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_metrics_type ON tasks(task_type, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_metrics_assignee ON tasks(assignee_id, created_at, id);
 CREATE TABLE IF NOT EXISTS gates (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -74,6 +80,8 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_task_events_task_created
+    ON task_events(task_id, created_at, id);
 CREATE TABLE IF NOT EXISTS session_links (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

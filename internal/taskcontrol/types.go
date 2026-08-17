@@ -10,6 +10,7 @@ var (
 	ErrNotFound          = errors.New("task control record not found")
 	ErrConflict          = errors.New("task control conflict")
 	ErrCompletionBlocked = errors.New("task completion gates are not satisfied")
+	ErrQueryLimit        = errors.New("task metrics query exceeds the bounded result limit")
 )
 
 var DefaultStatuses = []string{
@@ -140,4 +141,89 @@ type SessionLink struct {
 	Confidence float64   `json:"confidence"`
 	Active     bool      `json:"active"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type TaskFilter struct {
+	Project    string
+	Status     string
+	Phase      string
+	TaskType   string
+	AssigneeID string
+	From       *time.Time
+	To         *time.Time
+}
+
+type GateSummary struct {
+	Total           int  `json:"total"`
+	Required        int  `json:"required"`
+	Passed          int  `json:"passed"`
+	Failed          int  `json:"failed"`
+	Pending         int  `json:"pending"`
+	CompletionReady bool `json:"completion_ready"`
+}
+
+type PhaseDuration struct {
+	Phase   string `json:"phase"`
+	TotalMS int64  `json:"total_ms"`
+}
+
+type TaskTiming struct {
+	StartedAt      *time.Time      `json:"started_at,omitempty"`
+	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
+	LeadTimeMS     *int64          `json:"lead_time_ms,omitempty"`
+	CycleTimeMS    *int64          `json:"cycle_time_ms,omitempty"`
+	PhaseDurations []PhaseDuration `json:"phase_durations"`
+}
+
+type TaskDetail struct {
+	Task            Task          `json:"task"`
+	Gates           []Gate        `json:"gates"`
+	Events          []TaskEvent   `json:"events"`
+	SessionLinks    []SessionLink `json:"session_links"`
+	GateSummary     GateSummary   `json:"gate_summary"`
+	Timing          TaskTiming    `json:"timing"`
+	EventsTruncated bool          `json:"events_truncated"`
+}
+
+type CountBreakdown struct {
+	ByProject  map[string]int `json:"by_project"`
+	ByStatus   map[string]int `json:"by_status"`
+	ByPhase    map[string]int `json:"by_phase"`
+	ByType     map[string]int `json:"by_type"`
+	ByAssignee map[string]int `json:"by_assignee"`
+}
+
+type DurationStats struct {
+	Samples   int     `json:"samples"`
+	TotalMS   int64   `json:"total_ms"`
+	AverageMS float64 `json:"average_ms"`
+	MinMS     int64   `json:"min_ms"`
+	MaxMS     int64   `json:"max_ms"`
+}
+
+type PhaseDurationStats struct {
+	Phase string `json:"phase"`
+	DurationStats
+}
+
+type MetricsTiming struct {
+	LeadTime  DurationStats        `json:"lead_time"`
+	CycleTime DurationStats        `json:"cycle_time"`
+	PhaseTime []PhaseDurationStats `json:"phase_time"`
+}
+
+type MetricsGateSummary struct {
+	Total                int `json:"total"`
+	Required             int `json:"required"`
+	Passed               int `json:"passed"`
+	Failed               int `json:"failed"`
+	Pending              int `json:"pending"`
+	CompletionReadyTasks int `json:"completion_ready_tasks"`
+}
+
+type TaskMetrics struct {
+	TotalTasks int                `json:"total_tasks"`
+	Counts     CountBreakdown     `json:"counts"`
+	Timing     MetricsTiming      `json:"timing"`
+	Gates      MetricsGateSummary `json:"gates"`
 }

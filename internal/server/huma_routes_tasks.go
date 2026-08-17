@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -40,6 +41,38 @@ type taskView struct {
 	UpdatedAt      time.Time                 `json:"updated_at"`
 }
 
+type taskDetailView struct {
+	taskView
+	Events          []taskcontrol.TaskEvent `json:"events"`
+	GateSummary     taskcontrol.GateSummary `json:"gate_summary"`
+	Timing          taskcontrol.TaskTiming  `json:"timing"`
+	EventsTruncated bool                    `json:"events_truncated"`
+	AgentSession    *taskAgentSessionView   `json:"agent_session,omitempty"`
+}
+
+type taskAgentSessionView struct {
+	AgentID        string                     `json:"agent_id,omitempty"`
+	AgentName      string                     `json:"agent_name,omitempty"`
+	Harness        string                     `json:"harness,omitempty"`
+	RunID          string                     `json:"run_id,omitempty"`
+	Active         bool                       `json:"active"`
+	RunState       string                     `json:"run_state"`
+	Phase          string                     `json:"phase"`
+	LastActivityAt time.Time                  `json:"last_activity_at"`
+	RecentActivity []taskcontrol.TaskEvent    `json:"recent_activity"`
+	Links          []taskSessionReferenceView `json:"links"`
+}
+
+type taskSessionReferenceView struct {
+	SessionID            string `json:"session_id"`
+	Harness              string `json:"harness,omitempty"`
+	Active               bool   `json:"active"`
+	DetailAPIURL         string `json:"detail_api_url"`
+	ActivityAPIURL       string `json:"activity_api_url"`
+	RecentMessagesAPIURL string `json:"recent_messages_api_url"`
+	FullSessionURL       string `json:"full_session_url"`
+}
+
 type taskAgentView struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
@@ -66,6 +99,16 @@ type workflowView struct {
 
 type taskListInput struct {
 	Project string `query:"project" doc:"Project to filter by"`
+}
+
+type taskMetricsInput struct {
+	Project  string `query:"project" doc:"Project to filter by"`
+	Status   string `query:"status" doc:"Workflow status to filter by"`
+	Phase    string `query:"phase" doc:"Universal phase to filter by"`
+	Type     string `query:"type" doc:"Task type to filter by"`
+	Assignee string `query:"assignee" doc:"Assignee ID to filter by"`
+	From     string `query:"from" doc:"Inclusive task creation time in RFC3339 format"`
+	To       string `query:"to" doc:"Exclusive task creation time in RFC3339 format"`
 }
 
 type taskCreateInput struct {
@@ -169,6 +212,7 @@ func (s *Server) registerTaskControlRoutes() {
 	group := newRouteGroup(s.api, "/api/v1", "Tasks")
 	get(s, group, "/tasks", "List tasks", s.humaListTasks)
 	post(s, group, "/tasks", "Create task", s.humaCreateTask)
+	get(s, group, "/task-metrics", "Get aggregate task metrics", s.humaTaskMetrics)
 	get(s, group, "/tasks/{id}", "Get task", s.humaGetTask)
 	patch(s, group, "/tasks/{id}", "Update task", s.humaPatchTask)
 	get(s, group, "/task-agents", "List task agents", s.humaListTaskAgents)
@@ -329,20 +373,161 @@ func (s *Server) humaCreateTask(ctx context.Context, in *taskCreateInput) (*crea
 	return &createdOutput[taskView]{Status: http.StatusCreated, Body: views[0]}, nil
 }
 
-func (s *Server) humaGetTask(ctx context.Context, in *taskPathInput) (*jsonOutput[taskView], error) {
+func (s *Server) humaGetTask(ctx context.Context, in *taskPathInput) (*jsonOutput[taskDetailView], error) {
 	store, err := s.taskControlStore()
 	if err != nil {
 		return nil, internalError("open task store", err)
 	}
-	task, err := store.Task(ctx, in.ID)
+	detail, err := store.TaskDetail(ctx, in.ID)
 	if err != nil {
 		return nil, taskAPIError(err)
 	}
-	views, err := s.taskViews(ctx, []taskcontrol.Task{task})
+	views, err := s.taskViews(ctx, []taskcontrol.Task{detail.Task})
 	if err != nil {
 		return nil, internalError("expand task", err)
 	}
-	return &jsonOutput[taskView]{Body: views[0]}, nil
+	view := views[0]
+	view.Gates = detail.Gates
+	view.SessionLinks = detail.SessionLinks
+	if len(detail.Events) > 0 {
+		lastEvent := detail.Events[len(detail.Events)-1]
+		if lastEvent.CreatedAt.After(view.LastActivityAt) {
+			view.LastActivityAt = lastEvent.CreatedAt
+		}
+	}
+	return &jsonOutput[taskDetailView]{Body: taskDetailView{
+		taskView:        view,
+		Events:          detail.Events,
+		GateSummary:     detail.GateSummary,
+		Timing:          detail.Timing,
+		EventsTruncated: detail.EventsTruncated,
+		AgentSession:    buildTaskAgentSessionView(view, detail),
+	}}, nil
+}
+
+func buildTaskAgentSessionView(view taskView, detail taskcontrol.TaskDetail) *taskAgentSessionView {
+	if view.AssigneeID == "" && view.ActiveRunID == "" && len(detail.SessionLinks) == 0 {
+		return nil
+	}
+	result := &taskAgentSessionView{
+		AgentID: view.AssigneeID, AgentName: view.AssigneeName, Harness: view.Harness,
+		RunID: view.ActiveRunID, Active: view.ActiveRunID != "", RunState: "idle",
+		Phase: view.Phase, LastActivityAt: view.LastActivityAt,
+		RecentActivity: []taskcontrol.TaskEvent{}, Links: []taskSessionReferenceView{},
+	}
+	if result.Active {
+		result.RunState = "dispatched"
+	}
+	for index := len(detail.Events) - 1; index >= 0; index-- {
+		event := detail.Events[index]
+		if !isAgentActivity(event.Type) {
+			continue
+		}
+		eventRunID, _ := event.Payload["run_id"].(string)
+		if result.RunID == "" && eventRunID != "" {
+			result.RunID = eventRunID
+		}
+		if eventRunID != "" && result.RunID != "" && eventRunID != result.RunID {
+			continue
+		}
+		if len(result.RecentActivity) < 20 {
+			result.RecentActivity = append(result.RecentActivity, event)
+		}
+		if event.CreatedAt.After(result.LastActivityAt) {
+			result.LastActivityAt = event.CreatedAt
+		}
+		if phase, ok := event.Payload["phase"].(string); ok && phase != "" && len(result.RecentActivity) == 1 {
+			result.Phase = phase
+		}
+		if state := taskRunState(event.Type); state != "" && result.RunState == "idle" {
+			result.RunState = state
+		} else if state != "" && len(result.RecentActivity) == 1 {
+			result.RunState = state
+		}
+	}
+	for left, right := 0, len(result.RecentActivity)-1; left < right; left, right = left+1, right-1 {
+		result.RecentActivity[left], result.RecentActivity[right] =
+			result.RecentActivity[right], result.RecentActivity[left]
+	}
+	result.Active = result.Active && result.RunState != "completed" &&
+		result.RunState != "failed" && result.RunState != "cancelled"
+	for _, link := range detail.SessionLinks {
+		escaped := url.PathEscape(link.SessionID)
+		base := "/api/v1/sessions/" + escaped
+		result.Links = append(result.Links, taskSessionReferenceView{
+			SessionID: link.SessionID, Harness: link.Harness, Active: link.Active,
+			DetailAPIURL: base, ActivityAPIURL: base + "/activity",
+			RecentMessagesAPIURL: base + "/messages?limit=20&direction=desc",
+			FullSessionURL:       "/sessions/" + escaped,
+		})
+	}
+	return result
+}
+
+func isAgentActivity(eventType string) bool {
+	return strings.HasPrefix(eventType, "agent.run.") || eventType == "agent.progress" ||
+		eventType == "agent.completion.blocked"
+}
+
+func taskRunState(eventType string) string {
+	switch eventType {
+	case "agent.run.dispatched":
+		return "dispatched"
+	case "agent.run.started", "agent.run.progress", "agent.run.phase-changed", "agent.run.activity", "agent.progress":
+		return "running"
+	case "agent.run.blocked", "agent.completion.blocked":
+		return "blocked"
+	case "agent.run.completed":
+		return "completed"
+	case "agent.run.failed":
+		return "failed"
+	case "agent.run.cancelled":
+		return "cancelled"
+	default:
+		return ""
+	}
+}
+
+func (s *Server) humaTaskMetrics(
+	ctx context.Context, in *taskMetricsInput,
+) (*jsonOutput[taskcontrol.TaskMetrics], error) {
+	from, err := parseTaskMetricsTime("from", in.From)
+	if err != nil {
+		return nil, apiError(http.StatusBadRequest, err.Error())
+	}
+	to, err := parseTaskMetricsTime("to", in.To)
+	if err != nil {
+		return nil, apiError(http.StatusBadRequest, err.Error())
+	}
+	if from != nil && to != nil && from.After(*to) {
+		return nil, apiError(http.StatusBadRequest, "from must not be after to")
+	}
+	store, err := s.taskControlStore()
+	if err != nil {
+		return nil, internalError("open task store", err)
+	}
+	metrics, err := store.TaskMetrics(ctx, taskcontrol.TaskFilter{
+		Project: strings.TrimSpace(in.Project), AssigneeID: strings.TrimSpace(in.Assignee),
+		Status: strings.TrimSpace(in.Status), Phase: strings.TrimSpace(in.Phase),
+		TaskType: strings.TrimSpace(in.Type), From: from, To: to,
+	})
+	if err != nil {
+		return nil, taskAPIError(err)
+	}
+	return &jsonOutput[taskcontrol.TaskMetrics]{Body: metrics}, nil
+}
+
+func parseTaskMetricsTime(name, value string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be an RFC3339 timestamp", name)
+	}
+	parsed = parsed.UTC()
+	return &parsed, nil
 }
 
 func (s *Server) humaPatchTask(ctx context.Context, in *taskPatchInput) (*jsonOutput[taskView], error) {

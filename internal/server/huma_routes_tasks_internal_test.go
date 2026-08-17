@@ -75,6 +75,18 @@ func TestTaskRoutesCompletionWorkflowAndBroadcast(t *testing.T) {
 	assert.Equal(t, agent.Name, task.AssigneeName)
 	assert.Empty(t, task.Gates)
 
+	linkResponse := taskRouteRequest(t, srv, http.MethodPost,
+		"/api/v1/tasks/"+task.ID+"/session-links", map[string]any{
+			"session_id": "codex:session/1", "harness": "codex", "method": "explicit",
+		})
+	require.Equal(t, http.StatusCreated, linkResponse.Code, linkResponse.Body.String())
+	activityResponse := taskRouteRequest(t, srv, http.MethodPost,
+		"/api/v1/tasks/"+task.ID+"/events", map[string]any{
+			"type": "agent.run.progress", "source": "codex",
+			"payload": map[string]any{"run_id": "run-1", "phase": "Verify", "message": "Running tests"},
+		})
+	require.Equal(t, http.StatusCreated, activityResponse.Code, activityResponse.Body.String())
+
 	select {
 	case event := <-events:
 		assert.Equal(t, "tasks", event.Scope)
@@ -106,6 +118,21 @@ func TestTaskRoutesCompletionWorkflowAndBroadcast(t *testing.T) {
 	assert.Equal(t, "Done", completedTask.Status)
 	assert.Equal(t, "Deliver", completedTask.Phase)
 	assert.Len(t, completedTask.Evidence, 1)
+
+	detailResponse := taskRouteRequest(t, srv, http.MethodGet, "/api/v1/tasks/"+task.ID, nil)
+	require.Equal(t, http.StatusOK, detailResponse.Code, detailResponse.Body.String())
+	detail := decodeTaskRouteBody[taskDetailView](t, detailResponse)
+	require.NotNil(t, detail.AgentSession)
+	assert.Equal(t, agent.ID, detail.AgentSession.AgentID)
+	assert.Equal(t, "run-1", detail.AgentSession.RunID)
+	assert.Equal(t, "running", detail.AgentSession.RunState)
+	assert.Equal(t, "Verify", detail.AgentSession.Phase)
+	require.Len(t, detail.AgentSession.RecentActivity, 1)
+	require.Len(t, detail.AgentSession.Links, 1)
+	assert.Equal(t, "/api/v1/sessions/codex:session%2F1", detail.AgentSession.Links[0].DetailAPIURL)
+	assert.Equal(t, "/api/v1/sessions/codex:session%2F1/messages?limit=20&direction=desc",
+		detail.AgentSession.Links[0].RecentMessagesAPIURL)
+	assert.Equal(t, "/sessions/codex:session%2F1", detail.AgentSession.Links[0].FullSessionURL)
 
 	listResponse := taskRouteRequest(t, srv, http.MethodGet, "/api/v1/tasks?project=demo", nil)
 	require.Equal(t, http.StatusOK, listResponse.Code, listResponse.Body.String())
@@ -159,4 +186,58 @@ func TestTaskRoutesWorkflowSessionLinksAndEvents(t *testing.T) {
 	require.Equal(t, http.StatusOK, eventsResponse.Code, eventsResponse.Body.String())
 	events := decodeTaskRouteBody[itemsBody[taskcontrol.TaskEvent]](t, eventsResponse)
 	assert.Len(t, events.Items, 3)
+
+	detailResponse := taskRouteRequest(t, srv, http.MethodGet,
+		"/api/v1/tasks/"+task.ID, nil)
+	require.Equal(t, http.StatusOK, detailResponse.Code, detailResponse.Body.String())
+	detail := decodeTaskRouteBody[taskDetailView](t, detailResponse)
+	assert.Len(t, detail.Events, 3)
+	assert.Equal(t, []taskcontrol.SessionLink{link}, detail.SessionLinks)
+	assert.True(t, detail.GateSummary.CompletionReady)
+	assert.False(t, detail.EventsTruncated)
+}
+
+func TestTaskMetricsRouteFiltersAndEmptyData(t *testing.T) {
+	srv, _ := taskRouteServer(t)
+
+	emptyResponse := taskRouteRequest(t, srv, http.MethodGet, "/api/v1/task-metrics", nil)
+	require.Equal(t, http.StatusOK, emptyResponse.Code, emptyResponse.Body.String())
+	empty := decodeTaskRouteBody[taskcontrol.TaskMetrics](t, emptyResponse)
+	assert.Zero(t, empty.TotalTasks)
+	assert.NotNil(t, empty.Counts.ByProject)
+	assert.NotNil(t, empty.Timing.PhaseTime)
+
+	for _, task := range []map[string]any{
+		{"id": "metric-a", "project": "alpha", "title": "A", "type": "feature"},
+		{"id": "metric-b", "project": "beta", "title": "B", "type": "bug"},
+	} {
+		response := taskRouteRequest(t, srv, http.MethodPost, "/api/v1/tasks", task)
+		require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
+	}
+
+	response := taskRouteRequest(t, srv, http.MethodGet,
+		"/api/v1/task-metrics?project=alpha&type=feature&status=Backlog&phase=Understand", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	metrics := decodeTaskRouteBody[taskcontrol.TaskMetrics](t, response)
+	assert.Equal(t, 1, metrics.TotalTasks)
+	assert.Equal(t, map[string]int{"alpha": 1}, metrics.Counts.ByProject)
+	assert.Equal(t, map[string]int{"feature": 1}, metrics.Counts.ByType)
+}
+
+func TestTaskMetricsRouteRejectsBadTimeParameters(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "bad from", path: "/api/v1/task-metrics?from=tomorrow"},
+		{name: "bad to", path: "/api/v1/task-metrics?to=never"},
+		{name: "reversed", path: "/api/v1/task-metrics?from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			srv, _ := taskRouteServer(t)
+			response := taskRouteRequest(t, srv, http.MethodGet, test.path, nil)
+			assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+		})
+	}
 }
