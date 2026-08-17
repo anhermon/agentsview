@@ -199,3 +199,74 @@ command-injection surface in a daemon that has none today), or require a
 verifiable artifact reference the evaluator checks without executing
 anything (safer, but depends on `task-deliverable-attachments` landing first
 for durable evidence storage). Not implemented pending that answer.
+
+## Iteration 5 — deterministic gates now execute their rule — 2026-08-17
+
+### User decision
+
+Given both options, the user chose (1): execute `gate.Rule` as a server-side
+shell command and gate on its exit code.
+
+### Shipped
+
+- `internal/server/task_gate_evaluator.go`: `ruleGateEvaluator` runs a
+  deterministic gate's `Rule` via `sh -c` with a 5-minute timeout, in the
+  task's managed-runtime worktree if one has been prepared
+  (`taskrun.ResolveWorktreePath`), else the configured repository root.
+  Status is set from the real exit code; evidence records `rule`, `exit_code`,
+  `duration_ms`, `dir_source`, and captured (truncated) `output`. Non-
+  deterministic gate kinds (`human`, `llm`) and deterministic gates with no
+  `rule` fall back to the prior caller-asserted behavior, since the daemon
+  cannot execute human or model judgment.
+- `cmd/agentsview/task_runtime.go`: split repository/worktree validation out
+  of `resolveManagedTaskRuntimeConfig` into `validateTaskRuntimeConfig`, and
+  added `resolveGateRuleRepository` / `taskGateEvaluatorOption`, which wire
+  the real evaluator whenever `task_runtime.repository` is configured --
+  independent of `task_runtime.enabled`, since gate evaluation happens
+  through the CLI/API whether or not the daemon spawns agents. An
+  unconfigured daemon keeps the prior trust-based fallback.
+- Wired in `cmd/agentsview/main.go` next to the existing managed-runtime
+  option. Set `[task_runtime] repository` in the local `config.toml`
+  (`~/.agentsview/config.toml`, not tracked in the repo) to this checkout;
+  left `enabled` unset (default `false`) so the agent-spawning runtime stays
+  inert, per the standing "default-off must remain inert" rule.
+- Tests: `internal/server/task_gate_evaluator_test.go` (execution result,
+  output capture, worktree-vs-repository preference, timeout, non-
+  deterministic/ruleless fallback -- 6 cases) and additions to
+  `cmd/agentsview/task_runtime_test.go` for the new resolve/option functions.
+  Focused packages: 3325 passed. `go vet -tags fts5 ./...`: clean.
+
+### Live end-to-end verification (not just tests)
+
+Against the actual running daemon (first a throwaway instance, then the
+persistent hot-reload one after restarting it with the new config), created
+two gates on `task-release-validation` and evaluated each with a dishonest
+caller assertion:
+
+- Rule `exit 1`, caller asserted `approved: true` / `evidence.passed: true`
+  -> API returned `status: "failed"`, `evidence.exit_code: 1`.
+- Rule `echo verify-proof && exit 0`, caller asserted `approved: false` /
+  `evidence.passed: false` -> API returned `status: "passed"`,
+  `evidence.output: "verify-proof\n"`.
+
+The real exit code won in both directions; the caller's claim had no effect.
+Left the three verification gates (`gate-eval-verify-should-fail`,
+`gate-eval-verify-should-pass`, `gate-eval-verify-persistent-daemon`) on
+`task-release-validation` as durable proof rather than deleting them --
+there is currently no gate-delete endpoint, and manually editing `tasks.db`
+while the daemon is live was judged riskier than leaving three harmless,
+clearly-named, non-required gates in place.
+
+Filed this against `task_41ed1720fc3a1e59d11bc2c3` (S11) and moved it to
+`Done`/`Deliver` with an `agent.evidence` event recording the above.
+
+### Still queued
+
+- Gates evaluated for `task-runtime-activation`, `task-metrics-api`, and
+  `task-ticket-views` in Iteration 3 were never re-evaluated under the real
+  evaluator; those tickets remain `Done` on their original self-attested
+  evidence and are not retroactively re-verified.
+- No gate-delete endpoint exists; the three verification gates remain
+  visible on `task-release-validation`.
+- Enabling the managed runtime (agent-spawning) and the deliverable-
+  attachments feature remain unstarted, as recorded in prior iterations.

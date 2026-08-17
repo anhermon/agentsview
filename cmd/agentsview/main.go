@@ -510,6 +510,13 @@ func runServe(cfg config.Config, opts serveOptions) {
 	if taskRuntimeOpt != nil {
 		srvOpts = append(srvOpts, taskRuntimeOpt)
 	}
+	gateEvaluatorOpt, err := taskGateEvaluatorOption(cfg)
+	if err != nil {
+		fatal("configure task gate evaluator: %v", err)
+	}
+	if gateEvaluatorOpt != nil {
+		srvOpts = append(srvOpts, gateEvaluatorOpt)
+	}
 	srvOpts = append(srvOpts, server.WithArtifactExchangeRunner(
 		newDaemonArtifactExchangeRunner(cfg, database, engine, emitter),
 	))

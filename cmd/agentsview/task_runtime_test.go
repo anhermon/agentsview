@@ -115,6 +115,52 @@ func TestResolveManagedTaskRuntimeConfigDefaults(t *testing.T) {
 	assert.Equal(t, "HEAD", resolved.ref)
 }
 
+func TestResolveGateRuleRepositoryInertWithoutConfiguration(t *testing.T) {
+	t.Parallel()
+
+	resolved, ok, err := resolveGateRuleRepository(config.Config{})
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Zero(t, resolved)
+}
+
+func TestResolveGateRuleRepositoryDoesNotRequireEnabled(t *testing.T) {
+	t.Parallel()
+
+	repository := initTaskRuntimeRepository(t)
+	resolved, ok, err := resolveGateRuleRepository(config.Config{
+		DataDir: t.TempDir(),
+		TaskRuntime: config.TaskRuntimeConfig{
+			Enabled: false, Repository: repository,
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, repository, resolved.repository)
+}
+
+func TestTaskGateEvaluatorOptionInertWithoutConfiguration(t *testing.T) {
+	t.Parallel()
+
+	option, err := taskGateEvaluatorOption(config.Config{})
+	require.NoError(t, err)
+	assert.Nil(t, option)
+}
+
+func TestTaskGateEvaluatorOptionBuildsEvaluator(t *testing.T) {
+	t.Parallel()
+
+	repository := initTaskRuntimeRepository(t)
+	option, err := taskGateEvaluatorOption(config.Config{
+		DataDir: t.TempDir(),
+		TaskRuntime: config.TaskRuntimeConfig{
+			Repository: repository,
+		},
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, option)
+}
+
 func initTaskRuntimeRepository(t *testing.T) string {
 	t.Helper()
 	repository := t.TempDir()
