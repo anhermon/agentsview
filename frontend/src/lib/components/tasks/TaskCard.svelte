@@ -301,8 +301,8 @@
   }
 
   @keyframes agent-active-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-blue) 35%, transparent); }
-    50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-blue) 0%, transparent); }
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-blue) 55%, transparent); }
+    50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-blue) 25%, transparent); }
   }
 
   @media (prefers-reduced-motion: reduce) {

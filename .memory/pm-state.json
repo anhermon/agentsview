@@ -11,38 +11,190 @@
     "Session intelligence and analytics"
   ],
   "stories": [
-    {"id": "S1", "title": "Persist tasks and workflows", "status": "integrated", "owner": "task_backend"},
-    {"id": "S2", "title": "Expose the task REST API", "status": "integrated", "owner": "task_backend", "dependsOn": ["S1"]},
-    {"id": "S3", "title": "Add the event-driven harness runtime", "status": "integrated", "owner": "task_adapters"},
-    {"id": "S4", "title": "Add the Kanban and agent UI", "status": "integrated", "owner": "task_frontend", "dependsOn": ["S2"]},
-    {"id": "S5", "title": "Connect tasks, sessions, intelligence, and runtime", "status": "in_progress", "dependsOn": ["S1", "S2", "S3"]},
-    {"id": "S6", "title": "Validate and harden v1", "status": "pending", "dependsOn": ["S1", "S2", "S3", "S4", "S5"]},
-    {"id": "S7", "title": "Activate managed runtime from the daemon", "status": "integrated", "owner": "task_adapters", "dependsOn": ["S3", "S5"]},
-    {"id": "S8", "title": "Expose task detail and aggregate metrics", "status": "integrated", "owner": "task_backend", "dependsOn": ["S1", "S2"]},
-    {"id": "S9", "title": "Add ticket detail, live session, and metrics dashboard routes", "status": "integrated", "owner": "task_frontend", "dependsOn": ["S4", "S8"]},
-    {"id": "S10", "title": "Attach deliverables to task details (screenshots, git diffs, bounded files/links)", "status": "pending", "owner": "task_frontend", "dependsOn": ["S8", "S9"]},
-    {"id": "S11", "title": "Make deterministic gates actually deterministic", "status": "integrated", "dependsOn": [], "priority": "P0, outranked S10", "boardId": "task_41ed1720fc3a1e59d11bc2c3"}
+    {
+      "id": "S1",
+      "title": "Persist tasks and workflows",
+      "status": "integrated",
+      "owner": "task_backend"
+    },
+    {
+      "id": "S2",
+      "title": "Expose the task REST API",
+      "status": "integrated",
+      "owner": "task_backend",
+      "dependsOn": [
+        "S1"
+      ]
+    },
+    {
+      "id": "S3",
+      "title": "Add the event-driven harness runtime",
+      "status": "integrated",
+      "owner": "task_adapters"
+    },
+    {
+      "id": "S4",
+      "title": "Add the Kanban and agent UI",
+      "status": "integrated",
+      "owner": "task_frontend",
+      "dependsOn": [
+        "S2"
+      ]
+    },
+    {
+      "id": "S5",
+      "title": "Connect tasks, sessions, intelligence, and runtime",
+      "status": "in_progress",
+      "dependsOn": [
+        "S1",
+        "S2",
+        "S3"
+      ]
+    },
+    {
+      "id": "S6",
+      "title": "Validate and harden v1",
+      "status": "pending",
+      "dependsOn": [
+        "S1",
+        "S2",
+        "S3",
+        "S4",
+        "S5"
+      ]
+    },
+    {
+      "id": "S7",
+      "title": "Activate managed runtime from the daemon",
+      "status": "integrated",
+      "owner": "task_adapters",
+      "dependsOn": [
+        "S3",
+        "S5"
+      ]
+    },
+    {
+      "id": "S8",
+      "title": "Expose task detail and aggregate metrics",
+      "status": "integrated",
+      "owner": "task_backend",
+      "dependsOn": [
+        "S1",
+        "S2"
+      ]
+    },
+    {
+      "id": "S9",
+      "title": "Add ticket detail, live session, and metrics dashboard routes",
+      "status": "integrated",
+      "owner": "task_frontend",
+      "dependsOn": [
+        "S4",
+        "S8"
+      ]
+    },
+    {
+      "id": "S10",
+      "title": "Attach deliverables to task details (screenshots, git diffs, bounded files/links)",
+      "status": "pending",
+      "owner": "task_frontend",
+      "dependsOn": [
+        "S8",
+        "S9"
+      ]
+    },
+    {
+      "id": "S11",
+      "title": "Make deterministic gates actually deterministic",
+      "status": "integrated",
+      "dependsOn": [],
+      "priority": "P0, outranked S10",
+      "boardId": "task_41ed1720fc3a1e59d11bc2c3"
+    }
   ],
   "artifacts": [
-    {"phase": "prd", "file": "docs/task-control-plane/SPEC.md", "approvedAt": 1786986371},
-    {"phase": "architecture", "file": "docs/task-control-plane/ARCHITECTURE.md", "approvedAt": 1786986371},
-    {"phase": "story_creation", "file": "docs/task-control-plane/STORIES.md", "approvedAt": 1786986371}
+    {
+      "phase": "prd",
+      "file": "docs/task-control-plane/SPEC.md",
+      "approvedAt": 1786986371
+    },
+    {
+      "phase": "architecture",
+      "file": "docs/task-control-plane/ARCHITECTURE.md",
+      "approvedAt": 1786986371
+    },
+    {
+      "phase": "story_creation",
+      "file": "docs/task-control-plane/STORIES.md",
+      "approvedAt": 1786986371
+    }
   ],
   "clarifications": [],
   "eventLog": [
-    {"at": 1786986371, "event": "User directed remaining questions be inferred and implementation begin with subagents."},
-    {"at": 1786986371, "event": "PRD, architecture, and story gates auto-approved."},
-    {"at": 1786988473, "event": "Integrated storage/API, Kanban UI, harness runtime, CLI/MCP, and dispatch slices."},
-    {"at": 1786988473, "event": "User established lifecycle authority: implementing agents own Understand through Verify; coordinator owns only gated Verify to Done."},
-    {"at": 1786988473, "event": "Created and assigned three full-lifecycle dogfood tickets for runtime activation, metrics API, and ticket detail/dashboard views."},
-    {"at": 1786989184, "event": "User expanded ticket detail to require the actual active or linked agent session and bounded live activity."},
-    {"at": 1786992494, "event": "QA pass: focused + full Go suites (10848 tests), vet, frontend check/kit-ui/tests/build all green; remotesync flake did not recur. Moved task-runtime-activation, task-metrics-api, task-ticket-views to Done/Deliver with gate evidence."},
-    {"at": 1786992494, "event": "Root-caused why ticket detail shows no agent session for any task, including In Progress ones: RunCoordinator.persistSessionLink only fires from a live taskrun.Event emitted by the managed runtime, which has never been activated (daemon task_runtime.enabled stays off by default, no worktree ever created). Not a frontend bug; session_links/agent_session are correctly empty because no real run has ever dispatched."},
-    {"at": 1786992494, "event": "Added a pulsing border animation to Kanban TaskCard when an active session link exists, respecting prefers-reduced-motion; verified live in browser via temporary DOM class toggle, no real session data touched."},
-    {"at": 1786992494, "event": "Created S10 for the new task-deliverable-attachments ticket. Decisive next step remains unstarted: enable [task_runtime] in the daemon config and let it spawn a real agent process against one ticket to prove the full lifecycle + session-link + deliverable-attachment loop."},
-    {"at": 1786993249, "event": "User asked whether Verify actually works. Confirmed it does not: defaultTaskGateEvaluator (huma_routes_tasks.go:694) trusts caller-asserted evidence.passed/approved and never reads gate.Rule/Config; WithTaskGateEvaluator (server.go:320) is never wired into the real daemon. Every gate, including the three closed in Iteration 3, passed on self-attestation. Corrected the FEEDBACK_REPORT.md Iteration 3 record. Filed S11/task_41ed1720fc3a1e59d11bc2c3 with an explicit unresolved design question (execute gate.Rule server-side vs. check a verifiable artifact reference) for the user to answer before implementation. Surfaced gate rule/evidence/evaluated_at and a per-ticket Verify-to-Execute rework count in ticket detail so the self-attestation gap is visible instead of hidden."},
-    {"at": 1786994021, "event": "User chose option 1 for S11: execute gate.Rule server-side. Implemented ruleGateEvaluator (internal/server/task_gate_evaluator.go), wired via taskGateEvaluatorOption whenever task_runtime.repository is configured (independent of task_runtime.enabled, which stays off). Set [task_runtime] repository in ~/.agentsview/config.toml (machine-local, not tracked) and restarted the dev daemon to pick it up. Verified live end-to-end on the persistent daemon: a failing rule stayed failed and a passing rule stayed passed even when the caller asserted the opposite via approved/evidence.passed. Filed evidence on task_41ed1720fc3a1e59d11bc2c3 and moved it to Done. Gates evaluated in Iteration 3 (task-runtime-activation, task-metrics-api, task-ticket-views) were not retroactively re-verified and remain on their original self-attested evidence."},
-    {"at": 1786995000, "event": "User reported the active-agent animation never showed and the board looked static. Root cause: task_runtime.enabled had never been true, so no real session had ever been dispatched. Set enabled=true in ~/.agentsview/config.toml, created a throwaway agent-claude-dogfood + task_c0f73ce18d83fe5e129519c3 dogfood ticket, restarted the daemon, and assigned it, proving the full loop live: real claude subprocess spawned in a fresh worktree, session_link created, Kanban card showed the pulsing agent-active animation, ticket detail Agent Session panel populated with real harness/session data, run completed end-to-end in ~15s. A first orchestration subagent stalled 600s mid-run (root-caused as a tooling problem: touch(1) does not reliably fire air's fsnotify rebuild watcher, and a blocking Bash sleep-loop with no incremental output looks like a hang to the watchdog) -- work was completed manually rather than abandoned, per explicit user instruction not to treat a stalled subagent as a stopping point. A second subagent captured live Chrome screenshots as proof and found a real bug during verification: session_links.active was set true on creation and never flipped false on run completion, so the pulse animation would stay on forever once a task ever had a real session. Fixed at the root: added Store.DeactivateSessionLinks, called on EventCompleted/EventFailed/EventCancelled in RunCoordinator.persistEvent; covered by a testify assertion in run_coordinator_test.go; committed as fda4bd1b. The pre-fix dogfood ticket's session_link remains stale (active:true) as a harmless leftover artifact predating the fix."}
+    {
+      "at": 1786986371,
+      "event": "User directed remaining questions be inferred and implementation begin with subagents."
+    },
+    {
+      "at": 1786986371,
+      "event": "PRD, architecture, and story gates auto-approved."
+    },
+    {
+      "at": 1786988473,
+      "event": "Integrated storage/API, Kanban UI, harness runtime, CLI/MCP, and dispatch slices."
+    },
+    {
+      "at": 1786988473,
+      "event": "User established lifecycle authority: implementing agents own Understand through Verify; coordinator owns only gated Verify to Done."
+    },
+    {
+      "at": 1786988473,
+      "event": "Created and assigned three full-lifecycle dogfood tickets for runtime activation, metrics API, and ticket detail/dashboard views."
+    },
+    {
+      "at": 1786989184,
+      "event": "User expanded ticket detail to require the actual active or linked agent session and bounded live activity."
+    },
+    {
+      "at": 1786992494,
+      "event": "QA pass: focused + full Go suites (10848 tests), vet, frontend check/kit-ui/tests/build all green; remotesync flake did not recur. Moved task-runtime-activation, task-metrics-api, task-ticket-views to Done/Deliver with gate evidence."
+    },
+    {
+      "at": 1786992494,
+      "event": "Root-caused why ticket detail shows no agent session for any task, including In Progress ones: RunCoordinator.persistSessionLink only fires from a live taskrun.Event emitted by the managed runtime, which has never been activated (daemon task_runtime.enabled stays off by default, no worktree ever created). Not a frontend bug; session_links/agent_session are correctly empty because no real run has ever dispatched."
+    },
+    {
+      "at": 1786992494,
+      "event": "Added a pulsing border animation to Kanban TaskCard when an active session link exists, respecting prefers-reduced-motion; verified live in browser via temporary DOM class toggle, no real session data touched."
+    },
+    {
+      "at": 1786992494,
+      "event": "Created S10 for the new task-deliverable-attachments ticket. Decisive next step remains unstarted: enable [task_runtime] in the daemon config and let it spawn a real agent process against one ticket to prove the full lifecycle + session-link + deliverable-attachment loop."
+    },
+    {
+      "at": 1786993249,
+      "event": "User asked whether Verify actually works. Confirmed it does not: defaultTaskGateEvaluator (huma_routes_tasks.go:694) trusts caller-asserted evidence.passed/approved and never reads gate.Rule/Config; WithTaskGateEvaluator (server.go:320) is never wired into the real daemon. Every gate, including the three closed in Iteration 3, passed on self-attestation. Corrected the FEEDBACK_REPORT.md Iteration 3 record. Filed S11/task_41ed1720fc3a1e59d11bc2c3 with an explicit unresolved design question (execute gate.Rule server-side vs. check a verifiable artifact reference) for the user to answer before implementation. Surfaced gate rule/evidence/evaluated_at and a per-ticket Verify-to-Execute rework count in ticket detail so the self-attestation gap is visible instead of hidden."
+    },
+    {
+      "at": 1786994021,
+      "event": "User chose option 1 for S11: execute gate.Rule server-side. Implemented ruleGateEvaluator (internal/server/task_gate_evaluator.go), wired via taskGateEvaluatorOption whenever task_runtime.repository is configured (independent of task_runtime.enabled, which stays off). Set [task_runtime] repository in ~/.agentsview/config.toml (machine-local, not tracked) and restarted the dev daemon to pick it up. Verified live end-to-end on the persistent daemon: a failing rule stayed failed and a passing rule stayed passed even when the caller asserted the opposite via approved/evidence.passed. Filed evidence on task_41ed1720fc3a1e59d11bc2c3 and moved it to Done. Gates evaluated in Iteration 3 (task-runtime-activation, task-metrics-api, task-ticket-views) were not retroactively re-verified and remain on their original self-attested evidence."
+    },
+    {
+      "at": 1786995000,
+      "event": "User reported the active-agent animation never showed and the board looked static. Root cause: task_runtime.enabled had never been true, so no real session had ever been dispatched. Set enabled=true in ~/.agentsview/config.toml, created a throwaway agent-claude-dogfood + task_c0f73ce18d83fe5e129519c3 dogfood ticket, restarted the daemon, and assigned it, proving the full loop live: real claude subprocess spawned in a fresh worktree, session_link created, Kanban card showed the pulsing agent-active animation, ticket detail Agent Session panel populated with real harness/session data, run completed end-to-end in ~15s. A first orchestration subagent stalled 600s mid-run (root-caused as a tooling problem: touch(1) does not reliably fire air's fsnotify rebuild watcher, and a blocking Bash sleep-loop with no incremental output looks like a hang to the watchdog) -- work was completed manually rather than abandoned, per explicit user instruction not to treat a stalled subagent as a stopping point. A second subagent captured live Chrome screenshots as proof and found a real bug during verification: session_links.active was set true on creation and never flipped false on run completion, so the pulse animation would stay on forever once a task ever had a real session. Fixed at the root: added Store.DeactivateSessionLinks, called on EventCompleted/EventFailed/EventCancelled in RunCoordinator.persistEvent; covered by a testify assertion in run_coordinator_test.go; committed as fda4bd1b. The pre-fix dogfood ticket's session_link remains stale (active:true) as a harmless leftover artifact predating the fix."
+    },
+    {
+      "at": 1786997266,
+      "event": "Began real dogfooding of S10: created agent-codex-attachments, assigned task-deliverable-attachments, real Codex dispatch fired (run f21227a85eddb7901283100d) at 20:07:46Z. Acting as orchestrator per user directive: use the tooling to dispatch, monitor via subagent, and extract workflow intelligence (scoping clarity, phase timing, test coverage, gate evidence) from real runs rather than synthetic tests."
+    },
+    {
+      "at": 1786997900,
+      "event": "Root-caused the recurring 'no in-progress animation' report: the animation code (TaskCard.svelte agent-active class + CSS keyframe) was correct and has worked since it was first added. The prior verification step was a devtools class-toggle on an already-open tab -- a synthetic check, not a real reload against live session data -- so a stale browser tab could show 'no animation' indefinitely without the check ever catching it. Confirmed live via Chrome: after a hard reload, computed style on real In-Progress cards shows class agent-active and animationName svelte-1lta2hw-agent-active-pulse actually applied; the Review-column card whose session completed correctly has no agent-active class (DeactivateSessionLinks fix working). Workflow lesson: never certify a live-data UI behavior via a DOM/class toggle in devtools -- it proves the CSS exists, not that the real data path renders it. Always hard-reload and re-fetch before re-declaring a UI fix verified, per the standing 'render and look at it' rule."
+    },
+    {
+      "at": 1786998400,
+      "event": "CORRECTION to the prior root-cause claim: the animation code was NOT just fine, and the earlier 'confirmed working after hard reload' verdict was premature -- it only checked that the animation was assigned and running, not that it produced a visible effect. Found the real bug via live sampling: TaskCard.svelte's agent-active-pulse keyframe was self-canceling -- 0%/100% had 0px box-shadow spread (invisible regardless of color) and 50% had 4px spread but 0% color-mix alpha (fully transparent, invisible regardless of size), so spread and alpha were never both non-zero at the same keyframe stop; only a faint mid-interpolation blend was ever visible. Fixed by changing the 50% stop from 0% to 25% alpha and 4px to 6px spread, and the base alpha from 35% to 55%, so spread and glow color co-occur. Verified with real evidence, not just computed-style inspection: Web Animations API showed animation currentTime frozen at 0 in the automation tab (traced to document.hidden=true / visibilityState=hidden even in a freshly created tab -- a Chrome automation-environment artifact, not a real user-facing bug), so timing samples via JS were unreliable; instead took two zoomed screenshots 1s apart via the tool's real wait (bypasses JS timer throttling) and visually confirmed the border going from a flat line to a visible glowing halo and back. Second lesson stacked on the first: even a real reload plus a computed-style check (verifying animation-name and that it is 'running') is not sufficient for an animated visual effect -- must confirm the effect is actually perceptible (screenshot diff over real elapsed time), since a technically-running animation can still be functionally invisible due to keyframe math."
+    }
   ],
   "worktrees": [
     "/Users/angelhermon/dev/agentsview-task-backend",
@@ -61,9 +213,15 @@
     "requireUserApproval": []
   },
   "metadata": {
-    "notes": ["Single-user and local-machine v1; no hosting."],
-    "auto_approved_gates": ["prd", "architecture", "story_creation"]
+    "notes": [
+      "Single-user and local-machine v1; no hosting."
+    ],
+    "auto_approved_gates": [
+      "prd",
+      "architecture",
+      "story_creation"
+    ]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1786995000
+  "updatedAt": 1786998400
 }
