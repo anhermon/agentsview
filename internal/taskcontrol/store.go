@@ -701,6 +701,15 @@ func (s *Store) CreateSessionLink(ctx context.Context, link SessionLink) (Sessio
 	return link, nil
 }
 
+// DeactivateSessionLinks marks every session link for taskID inactive. Call
+// it when a run reaches a terminal state so link.Active converges with the
+// run's actual state instead of staying true forever.
+func (s *Store) DeactivateSessionLinks(ctx context.Context, taskID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE session_links SET active=? WHERE task_id=? AND active=?`,
+		false, taskID, true)
+	return err
+}
+
 func (s *Store) ListSessionLinks(ctx context.Context, taskID string) ([]SessionLink, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, task_id, session_id, harness,
 		method, confidence, active, created_at FROM session_links WHERE task_id=? ORDER BY created_at, id`, taskID)

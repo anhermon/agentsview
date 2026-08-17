@@ -216,11 +216,14 @@ func (c *RunCoordinator) persistEvent(
 		_, _ = c.store.PatchTask(c.ctx, task.ID, TaskPatch{
 			Status: &review, Phase: &verify, ActiveRunID: &emptyRunID,
 		})
+		_ = c.store.DeactivateSessionLinks(c.ctx, task.ID)
 	case taskrun.EventFailed:
 		blocked := workflowStatus(workflow, "Blocked", task.Status, -1)
 		_, _ = c.store.PatchTask(c.ctx, task.ID, TaskPatch{Status: &blocked, ActiveRunID: &emptyRunID})
+		_ = c.store.DeactivateSessionLinks(c.ctx, task.ID)
 	case taskrun.EventCancelled:
 		_, _ = c.store.PatchTask(c.ctx, task.ID, TaskPatch{ActiveRunID: &emptyRunID})
+		_ = c.store.DeactivateSessionLinks(c.ctx, task.ID)
 	}
 	c.notifyChanged()
 }
