@@ -2,6 +2,7 @@ import { SESSION_FILTER_KEYS } from "./sessionRouteParams.js";
 
 export type Route =
   | "sessions"
+  | "tasks"
   | "usage"
   | "token-usage"
   | "activity"
@@ -16,6 +17,7 @@ export type Route =
 
 const VALID_ROUTES: ReadonlySet<string> = new Set<Route>([
   "sessions",
+  "tasks",
   "usage",
   "token-usage",
   "activity",

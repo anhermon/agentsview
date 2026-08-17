@@ -73,6 +73,7 @@ describe("parsePath", () => {
   it("parses page routes", () => {
     for (const route of [
       "usage",
+      "tasks",
       "trends",
       "recall",
       "quality",

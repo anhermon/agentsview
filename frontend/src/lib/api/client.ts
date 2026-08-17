@@ -139,7 +139,7 @@ function processFrame(
 
 /** Event payload for /api/v1/events data_changed frames. */
 export interface DataChangedEvent {
-  scope: "messages" | "sessions" | "sync";
+  scope: "messages" | "sessions" | "sync" | "tasks";
 }
 
 /** Watch a session for live updates via SSE.
@@ -288,7 +288,8 @@ export function watchEvents(
     if (
       scope === "messages" ||
       scope === "sessions" ||
-      scope === "sync"
+      scope === "sync" ||
+      scope === "tasks"
     ) {
       onEvent({ scope });
     } else {

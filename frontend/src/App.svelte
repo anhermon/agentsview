@@ -66,6 +66,7 @@
   import TrashPage from "./lib/components/trash/TrashPage.svelte";
   import RecentEditsPage from "./lib/components/recentedits/RecentEditsPage.svelte";
   import DataPage from "./lib/components/data/DataPage.svelte";
+  import TasksPage from "./lib/components/tasks/TasksPage.svelte";
   import SettingsPage from "./lib/components/settings/SettingsPage.svelte";
   import { sessions, filtersToParams } from "./lib/stores/sessions.svelte.js";
   import { messages } from "./lib/stores/messages.svelte.js";
@@ -787,7 +788,11 @@
 
 <AppHeader />
 
-{#if router.route === "usage" || router.route === "token-usage"}
+{#if router.route === "tasks"}
+  <div class="page-scroll tasks-page-host">
+    <TasksPage />
+  </div>
+{:else if router.route === "usage" || router.route === "token-usage"}
   <div class="page-scroll">
     <UsagePage />
   </div>
@@ -932,6 +937,11 @@
   }
 
   .settings-page-host {
+    display: flex;
+    overflow: hidden;
+  }
+
+  .tasks-page-host {
     display: flex;
     overflow: hidden;
   }

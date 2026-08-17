@@ -8,3 +8,4 @@ export type * from "./session-activity.js";
 export type * from "./timing.js";
 export type * from "./usage.js";
 export type * from "./recall.js";
+export type * from "./tasks.js";
