@@ -29,6 +29,7 @@ import (
 	"go.kenn.io/agentsview/internal/remotesync"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/taskcontrol"
 	"go.kenn.io/agentsview/internal/web"
 	"go.kenn.io/kit/daemon"
 )
@@ -163,6 +164,12 @@ type Server struct {
 	artifactExchangeRunner ArtifactExchangeRunner
 
 	ensurePricing func(context.Context, *db.DB) error
+
+	taskStoreOnce     gosync.Once
+	taskStore         *taskcontrol.Store
+	taskStoreErr      error
+	ownsTaskStore     bool
+	taskGateEvaluator taskcontrol.GateEvaluator
 }
 
 type insightGenerationOptionsContextKey struct{}
@@ -296,6 +303,18 @@ func WithVersion(v VersionInfo) Option {
 // WithDataDir sets the data directory used for update caching.
 func WithDataDir(dir string) Option {
 	return func(s *Server) { s.dataDir = dir }
+}
+
+// WithTaskStore injects a task control store. The caller retains ownership.
+// Production servers normally open data-dir/tasks.db lazily on first use.
+func WithTaskStore(store *taskcontrol.Store) Option {
+	return func(s *Server) { s.taskStore = store }
+}
+
+// WithTaskGateEvaluator provides programmatic completion criteria. Without an
+// injected evaluator, the API accepts explicit approved/passed decisions.
+func WithTaskGateEvaluator(evaluator taskcontrol.GateEvaluator) Option {
+	return func(s *Server) { s.taskGateEvaluator = evaluator }
 }
 
 // WithBaseContext sets the base context for all incoming HTTP
@@ -1165,6 +1184,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Unlock()
 	if engine != nil {
 		engine.Close()
+	}
+	s.mu.Lock()
+	taskStore := s.taskStore
+	ownedTaskStore := s.ownsTaskStore
+	if ownedTaskStore {
+		s.taskStore = nil
+		s.ownsTaskStore = false
+	}
+	s.mu.Unlock()
+	if ownedTaskStore && taskStore != nil {
+		if closeErr := taskStore.Close(); err == nil {
+			err = closeErr
+		}
 	}
 	return err
 }
