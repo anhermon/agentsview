@@ -153,3 +153,49 @@ and let it spawn one real agent process against an assigned ticket.
 - `task-runtime-integration` remains stale at `In Progress`/`Execute` with no
   worktree and no run ever created — reconcile once the runtime is live.
 - `task-deliverable-attachments` implementation has not started.
+
+## Iteration 4 — gates are self-attested, not deterministic — 2026-08-17
+
+### Finding
+
+The user asked whether `Verify` actually works, or whether a human still has
+to find bugs in closed tickets. Traced the live gate-evaluate path:
+`defaultTaskGateEvaluator` (`internal/server/huma_routes_tasks.go:694`) reads
+only `input.Evidence["passed"]` / `input.Approved` — it never reads
+`gate.Rule` or `gate.Config`. `WithTaskGateEvaluator`
+(`internal/server/server.go:320`) exists as an extension point but is never
+called from the real daemon startup, only from tests. So a gate labeled
+`kind: "deterministic"` enforces nothing: it passes because whoever calls
+`POST /tasks/{id}/gates/{gateId}/evaluate` asserts a boolean. Existing gates
+do store a runnable-looking `rule` (e.g. `go test ./... && go vet ...`), so
+the schema anticipated real enforcement — it was never implemented.
+
+This means the three tickets closed in Iteration 3 — and `task-cli-mcp`
+before them — all passed gates on self-attestation. The underlying test runs
+were real and are recorded in each gate's `evidence` field, but the gate
+mechanism itself did not independently verify them. Corrected the Iteration 3
+claim above rather than leaving a false green in the record.
+
+### Shipped this iteration
+
+- Ticket-detail completion gates now render `rule`, raw `evidence`, and
+  `evaluated_at` per gate (previously only name/kind/status showed), plus a
+  per-ticket count of `Verify → Execute` phase reworks derived from existing
+  `task.updated` events. This makes the self-attestation gap visible in the
+  UI instead of hidden behind a plain "passed" chip.
+- Task metrics: phase-timing rows now carry the same relative bars as the
+  other distribution panels; the date-range filter no longer defaults to a
+  meaningless rolling 30-day window on a same-day dataset (defaults to
+  "All time").
+
+### New ticket: gate enforcement (S11)
+
+Filed `task_41ed1720fc3a1e59d11bc2c3` — "Make deterministic gates actually
+deterministic," priority 0, outranking `task-deliverable-attachments` (an
+evidence *delivery* mechanism is pointless in front of a gate system that
+doesn't check evidence). Contains an explicit, unresolved design question for
+the user: execute `gate.Rule` as a server-side shell command (real but a
+command-injection surface in a daemon that has none today), or require a
+verifiable artifact reference the evaluator checks without executing
+anything (safer, but depends on `task-deliverable-attachments` landing first
+for durable evidence storage). Not implemented pending that answer.
