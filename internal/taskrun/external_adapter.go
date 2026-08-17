@@ -48,6 +48,7 @@ type ExternalResponse struct {
 	RequestID string `json:"request_id"`
 	Kind      string `json:"kind"`
 	RunID     string `json:"run_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 	Event     *Event `json:"event,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
@@ -92,7 +93,7 @@ func (a *ExternalAdapter) Launch(ctx context.Context, request LaunchRequest) (Ru
 	if err := request.Envelope.Validate(); err != nil {
 		return RunRef{}, err
 	}
-	return a.startStream(ctx, ExternalRequest{Operation: ExternalLaunch, Launch: &request}, request.Worktree)
+	return a.startStream(ctx, ExternalRequest{Operation: ExternalLaunch, Launch: &request}, request.Worktree, "")
 }
 
 func (a *ExternalAdapter) Resume(ctx context.Context, request ResumeRequest) (RunRef, error) {
@@ -105,7 +106,7 @@ func (a *ExternalAdapter) Resume(ctx context.Context, request ResumeRequest) (Ru
 	if request.SessionID == "" {
 		return RunRef{}, errors.New("session ID is required to resume")
 	}
-	return a.startStream(ctx, ExternalRequest{Operation: ExternalResume, Resume: &request}, request.Worktree)
+	return a.startStream(ctx, ExternalRequest{Operation: ExternalResume, Resume: &request}, request.Worktree, request.SessionID)
 }
 
 func (a *ExternalAdapter) Observe(ctx context.Context, runID string) (<-chan Event, error) {
@@ -116,7 +117,7 @@ func (a *ExternalAdapter) Observe(ctx context.Context, runID string) (<-chan Eve
 	run, ok := a.runs[runID]
 	a.mu.Unlock()
 	if !ok {
-		ref, err := a.startStream(ctx, ExternalRequest{Operation: ExternalObserve, RunID: runID}, "")
+		ref, err := a.startStream(ctx, ExternalRequest{Operation: ExternalObserve, RunID: runID}, "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -170,7 +171,7 @@ func (a *ExternalAdapter) Cancel(ctx context.Context, runID string) error {
 	return nil
 }
 
-func (a *ExternalAdapter) startStream(ctx context.Context, request ExternalRequest, worktree string) (RunRef, error) {
+func (a *ExternalAdapter) startStream(ctx context.Context, request ExternalRequest, worktree, sessionID string) (RunRef, error) {
 	requestID, err := newRunID()
 	if err != nil {
 		return RunRef{}, err
@@ -230,6 +231,9 @@ func (a *ExternalAdapter) startStream(ctx context.Context, request ExternalReque
 		}
 		return RunRef{}, fmt.Errorf("%w: expected accepted response with run_id", ErrMalformedOutput)
 	}
+	if response.SessionID != "" {
+		sessionID = response.SessionID
+	}
 
 	run := &externalRun{cancel: cancel, events: make(chan Event, 128), done: make(chan struct{})}
 	a.mu.Lock()
@@ -242,7 +246,7 @@ func (a *ExternalAdapter) startStream(ctx context.Context, request ExternalReque
 	a.runs[response.RunID] = run
 	a.mu.Unlock()
 	go a.collectStream(runCtx, cmd, scanner, requestID, response.RunID, run)
-	return RunRef{ID: response.RunID}, nil
+	return RunRef{ID: response.RunID, SessionID: sessionID}, nil
 }
 
 func (a *ExternalAdapter) collectStream(ctx context.Context, cmd *exec.Cmd, scanner *bufio.Scanner, requestID, runID string, run *externalRun) {
@@ -366,7 +370,7 @@ func decodeExternalResponse(line []byte, requestID string) (ExternalResponse, er
 
 func validEventType(eventType EventType) bool {
 	switch eventType {
-	case EventStarted, EventOutput, EventPhaseChanged, EventProgress, EventBlocked, EventCompleted, EventFailed, EventCancelled:
+	case EventStarted, EventOutput, EventActivity, EventPhaseChanged, EventProgress, EventBlocked, EventCompleted, EventFailed, EventCancelled:
 		return true
 	default:
 		return false

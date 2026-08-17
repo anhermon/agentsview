@@ -2,6 +2,7 @@ package taskcontrol
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -100,15 +101,24 @@ func (c *RunCoordinator) Trigger(taskID string, triggerType taskrun.TriggerType)
 		}
 		criteria = append(criteria, taskrun.Criterion{ID: gate.ID, Summary: summary})
 	}
+	var instructions []string
+	if agent.Mode == "managed" {
+		instructions = []string{
+			"Use the AgentsView task CLI or task MCP tools for task updates; keep progress out of free-form chat.",
+			"Self-transition through Understand, Plan, and Execute, recording an agent.progress event for each phase.",
+			"After checks pass, transition to Review with phase Verify and record concise evidence; do not move the task to Done.",
+		}
+	}
 
 	run, err := c.runtime.Dispatch(c.ctx, taskrun.Trigger{
 		Type:      triggerType,
 		AdapterID: agent.Harness,
 		Envelope: taskrun.TaskEnvelope{
-			TaskID:     task.ID,
-			Summary:    compactTaskSummary(task),
-			Criteria:   criteria,
-			DetailsRef: "agentsview://tasks/" + url.PathEscape(task.ID),
+			TaskID:       task.ID,
+			Summary:      compactTaskSummary(task),
+			Criteria:     criteria,
+			Instructions: instructions,
+			DetailsRef:   "agentsview://tasks/" + url.PathEscape(task.ID),
 		},
 	})
 	if err != nil {
@@ -133,9 +143,14 @@ func (c *RunCoordinator) Trigger(taskID string, triggerType taskrun.TriggerType)
 		_ = c.runtime.CancelTask(context.Background(), taskID)
 		return fmt.Errorf("persist active run: %w", err)
 	}
+	dispatched := map[string]any{"run_id": run.ID, "trigger": triggerType}
+	if run.SessionID != "" {
+		dispatched["session_id"] = compactText(run.SessionID, 512)
+		c.persistSessionLink(task.ID, run.AdapterID, run.SessionID)
+	}
 	if _, err := c.store.AppendEvent(c.ctx, TaskEvent{
 		TaskID: task.ID, Type: "agent.run.dispatched", Source: agent.Harness,
-		Payload: map[string]any{"run_id": run.ID, "trigger": triggerType},
+		Payload: dispatched,
 	}); err != nil {
 		_ = c.runtime.CancelTask(context.Background(), taskID)
 		emptyRunID := ""
@@ -168,14 +183,18 @@ func (c *RunCoordinator) persistEvent(
 	task Task, workflow Workflow, run *taskrun.Run, event taskrun.Event,
 ) {
 	payload := map[string]any{"run_id": run.ID}
+	if event.SessionID != "" {
+		payload["session_id"] = compactText(event.SessionID, 512)
+		c.persistSessionLink(task.ID, run.AdapterID, event.SessionID)
+	}
 	if event.Phase != "" {
 		payload["phase"] = event.Phase
 	}
 	if event.Message != "" {
-		payload["message"] = compactText(event.Message, 2000)
+		payload["message"] = compactText(event.Message, 500)
 	}
 	if len(event.Data) > 0 {
-		payload["data"] = event.Data
+		payload["data"] = compactEventData(event.Data)
 	}
 	_, _ = c.store.AppendEvent(c.ctx, TaskEvent{
 		TaskID: task.ID, Type: "agent.run." + string(event.Type),
@@ -192,15 +211,11 @@ func (c *RunCoordinator) persistEvent(
 		blocked := workflowStatus(workflow, "Blocked", task.Status, -1)
 		_, _ = c.store.PatchTask(c.ctx, task.ID, TaskPatch{Status: &blocked})
 	case taskrun.EventCompleted:
-		_, _ = c.store.PatchTask(c.ctx, task.ID, TaskPatch{ActiveRunID: &emptyRunID})
-		done := workflow.Statuses[len(workflow.Statuses)-1]
-		deliver := UniversalPhases[len(UniversalPhases)-1]
-		if _, err := c.store.PatchTask(c.ctx, task.ID, TaskPatch{Status: &done, Phase: &deliver}); err != nil {
-			_, _ = c.store.AppendEvent(c.ctx, TaskEvent{
-				TaskID: task.ID, Type: "agent.completion.blocked", Source: run.AdapterID,
-				Payload: map[string]any{"run_id": run.ID, "error": compactText(err.Error(), 2000)},
-			})
-		}
+		review := workflowStatus(workflow, "Review", task.Status, len(workflow.Statuses)-2)
+		verify := "Verify"
+		_, _ = c.store.PatchTask(c.ctx, task.ID, TaskPatch{
+			Status: &review, Phase: &verify, ActiveRunID: &emptyRunID,
+		})
 	case taskrun.EventFailed:
 		blocked := workflowStatus(workflow, "Blocked", task.Status, -1)
 		_, _ = c.store.PatchTask(c.ctx, task.ID, TaskPatch{Status: &blocked, ActiveRunID: &emptyRunID})
@@ -208,6 +223,34 @@ func (c *RunCoordinator) persistEvent(
 		_, _ = c.store.PatchTask(c.ctx, task.ID, TaskPatch{ActiveRunID: &emptyRunID})
 	}
 	c.notifyChanged()
+}
+
+func (c *RunCoordinator) persistSessionLink(taskID, harness, sessionID string) {
+	sessionID = compactText(strings.TrimSpace(sessionID), 512)
+	if sessionID == "" {
+		return
+	}
+	links, err := c.store.ListSessionLinks(c.ctx, taskID)
+	if err != nil {
+		return
+	}
+	for _, link := range links {
+		if link.SessionID == sessionID {
+			return
+		}
+	}
+	_, _ = c.store.CreateSessionLink(c.ctx, SessionLink{
+		TaskID: taskID, SessionID: sessionID, Harness: harness,
+		Method: "runtime", Confidence: 1, Active: true,
+	})
+}
+
+func compactEventData(data map[string]any) map[string]any {
+	encoded, err := json.Marshal(data)
+	if err == nil && len(encoded) <= 4096 {
+		return data
+	}
+	return map[string]any{"truncated": true}
 }
 
 func (c *RunCoordinator) appendFailure(taskID string, trigger taskrun.TriggerType, err error) {

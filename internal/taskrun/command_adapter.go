@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -84,7 +85,7 @@ func (a *CommandAdapter) Capabilities() Capabilities {
 }
 
 func (a *CommandAdapter) Launch(ctx context.Context, request LaunchRequest) (RunRef, error) {
-	return a.start(ctx, request, a.definition.LaunchArgs)
+	return a.start(ctx, request, a.definition.LaunchArgs, "")
 }
 
 func (a *CommandAdapter) Resume(ctx context.Context, request ResumeRequest) (RunRef, error) {
@@ -94,10 +95,10 @@ func (a *CommandAdapter) Resume(ctx context.Context, request ResumeRequest) (Run
 	if strings.TrimSpace(request.SessionID) == "" {
 		return RunRef{}, errors.New("session ID is required to resume")
 	}
-	return a.start(ctx, request.LaunchRequest, a.definition.ResumeArgs(request.SessionID))
+	return a.start(ctx, request.LaunchRequest, a.definition.ResumeArgs(request.SessionID), request.SessionID)
 }
 
-func (a *CommandAdapter) start(ctx context.Context, request LaunchRequest, args []string) (RunRef, error) {
+func (a *CommandAdapter) start(ctx context.Context, request LaunchRequest, args []string, sessionID string) (RunRef, error) {
 	if err := request.Envelope.Validate(); err != nil {
 		return RunRef{}, err
 	}
@@ -136,9 +137,9 @@ func (a *CommandAdapter) start(ctx context.Context, request LaunchRequest, args 
 	a.mu.Lock()
 	a.runs[runID] = run
 	a.mu.Unlock()
-	run.events <- Event{Type: EventStarted, RunID: runID, Time: time.Now().UTC()}
+	run.events <- Event{Type: EventStarted, RunID: runID, SessionID: sessionID, Time: time.Now().UTC()}
 	go a.collect(runID, runCtx, cmd, stdout, stderr, run)
-	return RunRef{ID: runID}, nil
+	return RunRef{ID: runID, SessionID: sessionID}, nil
 }
 
 func (a *CommandAdapter) collect(runID string, ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Reader, run *commandRun) {
@@ -170,11 +171,93 @@ func scanCommandOutput(wg *sync.WaitGroup, events chan Event, runID, stream stri
 	defer wg.Done()
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		boundedEventSend(events, Event{Type: EventOutput, RunID: runID, Time: time.Now().UTC(), Stream: stream, Message: scanner.Text()}, false)
+		line := scanner.Text()
+		now := time.Now().UTC()
+		if activity, ok := normalizeCommandActivity(line); ok {
+			activity.RunID = runID
+			activity.Time = now
+			activity.Stream = stream
+			boundedEventSend(events, activity, false)
+		}
+		boundedEventSend(events, Event{Type: EventOutput, RunID: runID, Time: now, Stream: stream, Message: line}, false)
 	}
 	if err := scanner.Err(); err != nil {
 		boundedEventSend(events, Event{Type: EventOutput, RunID: runID, Time: time.Now().UTC(), Stream: stream, Message: "read output: " + err.Error()}, false)
 	}
+}
+
+const maxActivityMessageBytes = 240
+
+// normalizeCommandActivity extracts only stable session identifiers and a
+// compact activity label from structured harness output. The original line is
+// kept on the in-memory output stream and is never copied into this event.
+func normalizeCommandActivity(line string) (Event, bool) {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(line), &value); err != nil {
+		return Event{}, false
+	}
+	sessionID := firstTopLevelString(value, "session_id", "sessionId", "thread_id", "threadId", "conversation_id", "conversationId")
+	parts := compactActivityParts(value)
+	if len(parts) == 0 && sessionID == "" {
+		return Event{}, false
+	}
+	message := strings.Join(parts, ": ")
+	if len(message) > maxActivityMessageBytes {
+		message = message[:maxActivityMessageBytes]
+	}
+	return Event{Type: EventActivity, SessionID: sessionID, Message: message}, true
+}
+
+func compactActivityParts(value map[string]any) []string {
+	parts := make([]string, 0, 3)
+	for _, key := range []string{"type", "subtype"} {
+		if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
+			parts = append(parts, strings.TrimSpace(text))
+		}
+	}
+	if nested, ok := value["item"].(map[string]any); ok {
+		if text, ok := nested["type"].(string); ok && strings.TrimSpace(text) != "" {
+			parts = append(parts, strings.TrimSpace(text))
+		}
+	}
+	if len(parts) < 3 {
+		if name := firstToolName(value); name != "" {
+			parts = append(parts, name)
+		}
+	}
+	return parts
+}
+
+func firstToolName(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		if eventType, _ := typed["type"].(string); eventType == "tool_use" {
+			if name, _ := typed["name"].(string); strings.TrimSpace(name) != "" {
+				return strings.TrimSpace(name)
+			}
+		}
+		for _, child := range typed {
+			if name := firstToolName(child); name != "" {
+				return name
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if name := firstToolName(child); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func firstTopLevelString(value map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	return ""
 }
 
 func boundedEventSend(events chan Event, event Event, terminal bool) {

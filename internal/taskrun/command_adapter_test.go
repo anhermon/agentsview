@@ -49,6 +49,51 @@ func TestCommandAdapterStreamsOutputAndCompletion(t *testing.T) {
 	assert.Contains(t, eventMessages(collected), "received task envelope")
 }
 
+func TestCommandAdapterNormalizesBoundedActivityAndSessionID(t *testing.T) {
+	t.Parallel()
+
+	adapter := commandTestAdapter("structured")
+	ref, err := adapter.Launch(context.Background(), LaunchRequest{
+		Envelope: testEnvelope("COMMAND-SESSION"), Trigger: TriggerAssignment, Worktree: t.TempDir(),
+	})
+	require.NoError(t, err)
+	events, err := adapter.Observe(context.Background(), ref.ID)
+	require.NoError(t, err)
+	collected := collectEvents(t, events)
+
+	var activity Event
+	for _, event := range collected {
+		if event.Type == EventActivity {
+			activity = event
+			break
+		}
+	}
+	assert.Equal(t, "session-structured", activity.SessionID)
+	assert.Equal(t, "item.started: command_execution", activity.Message)
+	assert.NotContains(t, activity.Message, "secret command transcript")
+	assert.LessOrEqual(t, len(activity.Message), maxActivityMessageBytes)
+}
+
+func TestNormalizeCommandActivityRecognizesHarnessSessionKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, line, session, activity string
+	}{
+		{name: "claude", line: `{"type":"system","subtype":"init","session_id":"claude-1"}`, session: "claude-1", activity: "system: init"},
+		{name: "codex", line: `{"type":"thread.started","thread_id":"codex-1"}`, session: "codex-1", activity: "thread.started"},
+		{name: "nested tool", line: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]},"conversation_id":"pi-1"}`, session: "pi-1", activity: "assistant: Read"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event, ok := normalizeCommandActivity(test.line)
+			require.True(t, ok)
+			assert.Equal(t, test.session, event.SessionID)
+			assert.Equal(t, test.activity, event.Message)
+		})
+	}
+}
+
 func TestCommandAdapterCancellationEmitsTerminalEvent(t *testing.T) {
 	t.Parallel()
 
@@ -104,6 +149,8 @@ func TestCommandAdapterHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Hour)
 		}
+	case "structured":
+		fmt.Println(`{"type":"item.started","thread_id":"session-structured","item":{"type":"command_execution","command":"secret command transcript"}}`)
 	default:
 		os.Exit(2)
 	}

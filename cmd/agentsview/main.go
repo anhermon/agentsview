@@ -503,6 +503,13 @@ func runServe(cfg config.Config, opts serveOptions) {
 			newForegroundResyncRunner(ctx, cfg, engine, database),
 		))
 	}
+	taskRuntimeOpt, err := managedTaskRuntimeOption(cfg)
+	if err != nil {
+		fatal("configure managed task runtime: %v", err)
+	}
+	if taskRuntimeOpt != nil {
+		srvOpts = append(srvOpts, taskRuntimeOpt)
+	}
 	srvOpts = append(srvOpts, server.WithArtifactExchangeRunner(
 		newDaemonArtifactExchangeRunner(cfg, database, engine, emitter),
 	))

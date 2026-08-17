@@ -38,19 +38,35 @@ func TestRunCoordinatorAssignmentStartsOneAdapterAndPersistsEvents(t *testing.T)
 	require.NoError(t, coordinator.Trigger(task.ID, taskrun.TriggerAssignment))
 	require.ErrorIs(t, coordinator.Trigger(task.ID, taskrun.TriggerRetry), taskrun.ErrActiveRun)
 	assert.Equal(t, 1, adapter.launchCount())
+	running, err := store.Task(ctx, task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "run-1", running.ActiveRunID)
+	request := adapter.lastRequest()
+	require.Len(t, request.Envelope.Instructions, 3)
+	assert.Contains(t, request.Envelope.Instructions[0], "CLI or task MCP")
+	assert.Contains(t, request.Envelope.Instructions[2], "Review with phase Verify")
 
 	adapter.emit(taskrun.Event{Type: taskrun.EventPhaseChanged, Phase: "Execute"})
 	adapter.emit(taskrun.Event{Type: taskrun.EventProgress, Data: map[string]any{"completed": 2, "total": 3}})
+	adapter.emit(taskrun.Event{Type: taskrun.EventOutput, Message: "raw transcript must not persist"})
+	adapter.emit(taskrun.Event{Type: taskrun.EventActivity, SessionID: "session-1", Message: "item.started: command_execution"})
+	adapter.emit(taskrun.Event{Type: taskrun.EventProgress, Data: map[string]any{"oversized": string(make([]byte, 5000))}})
 	adapter.emit(taskrun.Event{Type: taskrun.EventCompleted})
 	adapter.closeEvents()
 
 	require.Eventually(t, func() bool {
 		updated, taskErr := store.Task(ctx, task.ID)
-		return taskErr == nil && updated.Status == "Done" && updated.ActiveRunID == ""
+		return taskErr == nil && updated.Status == "Review" && updated.ActiveRunID == ""
 	}, 5*time.Second, 10*time.Millisecond)
 	updated, err := store.Task(ctx, task.ID)
 	require.NoError(t, err)
-	assert.Equal(t, "Deliver", updated.Phase)
+	assert.Equal(t, "Verify", updated.Phase)
+	links, err := store.ListSessionLinks(ctx, task.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 1)
+	assert.Equal(t, "session-1", links[0].SessionID)
+	assert.Equal(t, "fake", links[0].Harness)
+	assert.Equal(t, "runtime", links[0].Method)
 	events, err := store.ListEvents(ctx, task.ID)
 	require.NoError(t, err)
 	types := make([]string, 0, len(events))
@@ -60,7 +76,23 @@ func TestRunCoordinatorAssignmentStartsOneAdapterAndPersistsEvents(t *testing.T)
 	assert.Contains(t, types, "agent.run.dispatched")
 	assert.Contains(t, types, "agent.run.phase-changed")
 	assert.Contains(t, types, "agent.run.progress")
+	assert.Contains(t, types, "agent.run.activity")
 	assert.Contains(t, types, "agent.run.completed")
+	sawTruncatedData := false
+	for _, event := range events {
+		assert.NotContains(t, fmt.Sprint(event.Payload), "raw transcript must not persist")
+		if event.Type == "agent.run.activity" {
+			assert.Equal(t, "run-1", event.Payload["run_id"])
+			assert.Equal(t, "session-1", event.Payload["session_id"])
+		}
+		if event.Type == "agent.run.progress" {
+			if data, ok := event.Payload["data"].(map[string]any); ok && data["truncated"] == true {
+				assert.Len(t, data, 1)
+				sawTruncatedData = true
+			}
+		}
+	}
+	assert.True(t, sawTruncatedData)
 }
 
 func TestRunCoordinatorIdleTaskStartsNoAdapter(t *testing.T) {
@@ -116,6 +148,7 @@ func openRunCoordinatorStore(t *testing.T) *Store {
 type coordinatorFakeAdapter struct {
 	mu       sync.Mutex
 	launches int
+	requests []taskrun.LaunchRequest
 	events   chan taskrun.Event
 	closed   bool
 }
@@ -132,10 +165,11 @@ func (a *coordinatorFakeAdapter) Capabilities() taskrun.Capabilities {
 	}
 }
 
-func (a *coordinatorFakeAdapter) Launch(_ context.Context, _ taskrun.LaunchRequest) (taskrun.RunRef, error) {
+func (a *coordinatorFakeAdapter) Launch(_ context.Context, request taskrun.LaunchRequest) (taskrun.RunRef, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.launches++
+	a.requests = append(a.requests, request)
 	return taskrun.RunRef{ID: fmt.Sprintf("run-%d", a.launches)}, nil
 }
 
@@ -169,4 +203,10 @@ func (a *coordinatorFakeAdapter) launchCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.launches
+}
+
+func (a *coordinatorFakeAdapter) lastRequest() taskrun.LaunchRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.requests[len(a.requests)-1]
 }

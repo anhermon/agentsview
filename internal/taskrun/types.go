@@ -91,11 +91,12 @@ type Reference struct {
 // TaskEnvelope is intentionally compact. Full task history and large artifacts
 // stay behind DetailsRef and can be fetched by the agent only when needed.
 type TaskEnvelope struct {
-	TaskID     string      `json:"task_id"`
-	Summary    string      `json:"summary"`
-	Criteria   []Criterion `json:"criteria,omitempty"`
-	References []Reference `json:"references,omitempty"`
-	DetailsRef string      `json:"details_ref,omitempty"`
+	TaskID       string      `json:"task_id"`
+	Summary      string      `json:"summary"`
+	Criteria     []Criterion `json:"criteria,omitempty"`
+	References   []Reference `json:"references,omitempty"`
+	Instructions []string    `json:"instructions,omitempty"`
+	DetailsRef   string      `json:"details_ref,omitempty"`
 }
 
 func (e TaskEnvelope) Validate() error {
@@ -113,6 +114,11 @@ func (e TaskEnvelope) Validate() error {
 	for i, reference := range e.References {
 		if strings.TrimSpace(reference.Kind) == "" || strings.TrimSpace(reference.URI) == "" {
 			return fmt.Errorf("reference %d requires kind and uri", i)
+		}
+	}
+	for i, instruction := range e.Instructions {
+		if strings.TrimSpace(instruction) == "" {
+			return fmt.Errorf("instruction %d must not be empty", i)
 		}
 	}
 	return nil
@@ -142,6 +148,12 @@ func (e TaskEnvelope) Prompt() string {
 			fmt.Fprintf(&b, "- %s: %s\n", label, reference.URI)
 		}
 	}
+	if len(e.Instructions) > 0 {
+		b.WriteString("Lifecycle instructions:\n")
+		for _, instruction := range e.Instructions {
+			fmt.Fprintf(&b, "- %s\n", instruction)
+		}
+	}
 	if e.DetailsRef != "" {
 		fmt.Fprintf(&b, "Fetch additional details on demand from: %s\n", e.DetailsRef)
 	}
@@ -160,7 +172,8 @@ type ResumeRequest struct {
 }
 
 type RunRef struct {
-	ID string `json:"id"`
+	ID        string `json:"id"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 type EventType string
@@ -168,6 +181,7 @@ type EventType string
 const (
 	EventStarted      EventType = "started"
 	EventOutput       EventType = "output"
+	EventActivity     EventType = "activity"
 	EventPhaseChanged EventType = "phase-changed"
 	EventProgress     EventType = "progress"
 	EventBlocked      EventType = "blocked"
@@ -185,6 +199,7 @@ type Event struct {
 	RunID     string         `json:"run_id,omitempty"`
 	TaskID    string         `json:"task_id,omitempty"`
 	AdapterID string         `json:"adapter_id,omitempty"`
+	SessionID string         `json:"session_id,omitempty"`
 	Time      time.Time      `json:"time,omitempty"`
 	Phase     string         `json:"phase,omitempty"`
 	Message   string         `json:"message,omitempty"`
@@ -203,6 +218,7 @@ type Run struct {
 	ID        string
 	TaskID    string
 	AdapterID string
+	SessionID string
 	Worktree  string
 	Events    <-chan Event
 }

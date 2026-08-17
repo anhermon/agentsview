@@ -130,12 +130,13 @@ func (r *Runtime) Dispatch(ctx context.Context, trigger Trigger) (*Run, error) {
 		return nil, err
 	}
 	events := make(chan Event, 64)
-	go r.forward(taskID, adapter.ID(), ref.ID, source, events)
+	go r.forward(taskID, adapter.ID(), ref.ID, ref.SessionID, source, events)
 
 	return &Run{
 		ID:        ref.ID,
 		TaskID:    taskID,
 		AdapterID: adapter.ID(),
+		SessionID: ref.SessionID,
 		Worktree:  worktree,
 		Events:    events,
 	}, nil
@@ -162,7 +163,7 @@ func (r *Runtime) ActiveRun(taskID string) (RunRef, bool) {
 	return active.ref, ok && active.ref.ID != ""
 }
 
-func (r *Runtime) forward(taskID, adapterID, runID string, source <-chan Event, destination chan Event) {
+func (r *Runtime) forward(taskID, adapterID, runID, sessionID string, source <-chan Event, destination chan Event) {
 	defer close(destination)
 	terminal := false
 	for event := range source {
@@ -174,6 +175,9 @@ func (r *Runtime) forward(taskID, adapterID, runID string, source <-chan Event, 
 		}
 		if event.AdapterID == "" {
 			event.AdapterID = adapterID
+		}
+		if event.SessionID == "" {
+			event.SessionID = sessionID
 		}
 		if event.Time.IsZero() {
 			event.Time = time.Now().UTC()

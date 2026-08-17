@@ -24,6 +24,7 @@ func TestExternalAdapterStreamsNormalizedEvents(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "external-run", ref.ID)
+	assert.Equal(t, "external-session", ref.SessionID)
 	events, err := adapter.Observe(context.Background(), ref.ID)
 	require.NoError(t, err)
 	collected := collectEvents(t, events)
@@ -128,6 +129,7 @@ func TestExternalAdapterHelper(t *testing.T) {
 		RequestID: request.RequestID,
 		Kind:      "accepted",
 		RunID:     "external-run",
+		SessionID: "external-session",
 	})
 	if mode == "malformed-stream" {
 		fmt.Println("not-json")

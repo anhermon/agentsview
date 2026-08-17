@@ -80,6 +80,9 @@ The existing `agentsview serve --background`, `agentsview serve status`, and
 a one-off daemon needs a serve-only flag, such as `--no-sync` or an
 unauthenticated non-loopback `--host` override.
 
+Managed task execution is disabled by default. To opt a local daemon into
+event-driven task assignment, see [Managed task runtime](docs/task-runtime.md).
+
 ## Remote / forwarded access
 
 agentsview binds to loopback and validates the request `Host` header to guard

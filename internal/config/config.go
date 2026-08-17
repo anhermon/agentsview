@@ -542,6 +542,16 @@ type sessionSourceConfig struct {
 	Machine *string `toml:"machine"`
 }
 
+// TaskRuntimeConfig enables event-driven managed task execution in the serve
+// daemon. It is disabled by default and creates no process or worktree until a
+// task is explicitly assigned or triggered.
+type TaskRuntimeConfig struct {
+	Enabled      bool   `json:"enabled" toml:"enabled"`
+	Repository   string `json:"repository,omitempty" toml:"repository"`
+	WorktreeRoot string `json:"worktree_root,omitempty" toml:"worktree_root"`
+	Ref          string `json:"ref,omitempty" toml:"ref"`
+}
+
 // Config holds all application configuration.
 type Config struct {
 	Host                 string                 `json:"host" toml:"host"`
@@ -574,6 +584,7 @@ type Config struct {
 	Recall               RecallConfig           `json:"recall,omitempty" toml:"recall"`
 	Insights             InsightsConfig         `json:"insights,omitempty" toml:"insights"`
 	Automated            AutomatedConfig        `json:"automated,omitempty" toml:"automated"`
+	TaskRuntime          TaskRuntimeConfig      `json:"task_runtime,omitempty" toml:"task_runtime"`
 	Agent                map[string]AgentConfig `json:"agent,omitempty" toml:"agent"`
 	WriteTimeout         time.Duration          `json:"-" toml:"-"`
 	// LocalMachineName is the operating-system hostname used to identify
@@ -1205,6 +1216,7 @@ func (c *Config) applyConfigTOML(data string) error {
 		Recall                         RecallConfig               `toml:"recall"`
 		Insights                       InsightsConfig             `toml:"insights"`
 		Automated                      AutomatedConfig            `toml:"automated"`
+		TaskRuntime                    TaskRuntimeConfig          `toml:"task_runtime"`
 		Agent                          map[string]AgentConfig     `toml:"agent"`
 		EventsCoalesceInterval         time.Duration              `toml:"events_coalesce_interval"`
 		DaemonIdleTimeout              time.Duration              `toml:"daemon_idle_timeout"`
@@ -1410,6 +1422,9 @@ func (c *Config) applyConfigTOML(data string) error {
 		c.Insights.Endpoint = strings.TrimSpace(c.Insights.Endpoint)
 		c.Insights.Model = strings.TrimSpace(c.Insights.Model)
 		c.Insights.APIKeyEnv = strings.TrimSpace(c.Insights.APIKeyEnv)
+	}
+	if meta.IsDefined("task_runtime") {
+		c.TaskRuntime = file.TaskRuntime
 	}
 	// IsDefined distinguishes "unset" (leave default 10s) from an
 	// explicit "0s" (disable coalescing). Checking != 0 would silently
@@ -1769,6 +1784,19 @@ func RegisterServeFlags(fs *flag.FlagSet) {
 		"write-timeout", 30*time.Second,
 		"Max time to write an API response before a 503 request-timed-out; raise for slow aggregates over large datasets (0 disables)",
 	)
+	fs.Bool("task-runtime", false, "Enable event-driven managed task execution")
+	fs.String(
+		"task-runtime-repository", "",
+		"Absolute Git repository path used for managed task worktrees",
+	)
+	fs.String(
+		"task-runtime-worktree-root", "",
+		"Absolute managed task worktree root (default: data-dir/task-worktrees)",
+	)
+	fs.String(
+		"task-runtime-ref", "",
+		"Git ref used for new managed task worktrees (default: HEAD)",
+	)
 }
 
 // RegisterServePFlags registers serve-command flags on fs.
@@ -1837,6 +1865,19 @@ func RegisterServePFlags(fs *pflag.FlagSet) {
 		"write-timeout", 30*time.Second,
 		"Max time to write an API response before a 503 request-timed-out; raise for slow aggregates over large datasets (0 disables)",
 	)
+	fs.Bool("task-runtime", false, "Enable event-driven managed task execution")
+	fs.String(
+		"task-runtime-repository", "",
+		"Absolute Git repository path used for managed task worktrees",
+	)
+	fs.String(
+		"task-runtime-worktree-root", "",
+		"Absolute managed task worktree root (default: data-dir/task-worktrees)",
+	)
+	fs.String(
+		"task-runtime-ref", "",
+		"Git ref used for new managed task worktrees (default: HEAD)",
+	)
 }
 
 // applyFlags copies explicitly-set flags from fs into cfg.
@@ -1900,6 +1941,14 @@ func applyFlagValue(cfg *Config, name, value string) {
 		if d, err := time.ParseDuration(value); err == nil {
 			cfg.WriteTimeout = d
 		}
+	case "task-runtime":
+		cfg.TaskRuntime.Enabled = value == "true"
+	case "task-runtime-repository":
+		cfg.TaskRuntime.Repository = value
+	case "task-runtime-worktree-root":
+		cfg.TaskRuntime.WorktreeRoot = value
+	case "task-runtime-ref":
+		cfg.TaskRuntime.Ref = value
 	case "pg":
 		// Read-routing only. The CLI resolver combines this flag
 		// with cfg.PG from env/config and does not persist a new

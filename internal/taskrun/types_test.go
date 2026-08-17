@@ -19,7 +19,8 @@ func TestTaskEnvelopePromptIsCompactAndFetchesDetailsOnDemand(t *testing.T) {
 		References: []Reference{
 			{Label: "failing fixture", Kind: "file", URI: "repo://parser/testdata/broken.jsonl"},
 		},
-		DetailsRef: "agentsview://tasks/TASK-7/details",
+		Instructions: []string{"Move through task phases using structured task tools."},
+		DetailsRef:   "agentsview://tasks/TASK-7/details",
 	}
 	require.NoError(t, envelope.Validate())
 
@@ -28,6 +29,8 @@ func TestTaskEnvelopePromptIsCompactAndFetchesDetailsOnDemand(t *testing.T) {
 	assert.Contains(t, prompt, "[unit] unit tests pass")
 	assert.Contains(t, prompt, "repo://parser/testdata/broken.jsonl")
 	assert.Contains(t, prompt, "Fetch additional details on demand")
+	assert.Contains(t, prompt, "Lifecycle instructions")
+	assert.Contains(t, prompt, "structured task tools")
 	assert.NotContains(t, prompt, "history")
 }
 
