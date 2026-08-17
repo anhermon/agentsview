@@ -75,3 +75,37 @@ request occurs. Given a large archive, task event work remains batch-bounded.
 
 Dependencies: S1-S5.
 
+## S7 — Activate managed runtime from the daemon (M)
+
+As a local operator, I want an explicit daemon option for managed execution so
+that assignments can launch agents while default idle operation remains inert.
+
+Given the option is disabled, no runtime, worktree, or harness process is
+created. Given valid repository/worktree configuration and an assignment event,
+the selected built-in adapter starts with compact lifecycle instructions.
+
+Dependencies: S3, S5.
+
+## S8 — Expose task detail and aggregate metrics (M)
+
+As a local operator, I want bounded detail and metrics queries so that ticket
+and portfolio views are derived from durable task evidence.
+
+Given task filters, aggregate counts and timings identify applied filters and
+contributing tasks. Given a ticket, its detail supplies gates, events, session
+links, run state, and timing without copying unbounded session transcripts.
+
+Dependencies: S1, S2.
+
+## S9 — Add ticket detail, live session, and metrics dashboard views (M)
+
+As a local operator, I want to open a ticket, inspect the working agent session,
+and filter overall task metrics so that I can understand both current execution
+and delivery performance.
+
+Given a card, pointer or keyboard activation opens `/tasks/{id}`. Given an
+active or linked session, the detail view shows bounded live activity and links
+to the full session. Given `/tasks/metrics`, filters update the aggregates and
+can be cleared, including valid empty/loading/error states.
+
+Dependencies: S4, S8.

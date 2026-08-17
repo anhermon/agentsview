@@ -69,6 +69,9 @@ JSON errors use `{ "error": { "code": string, "message": string,
 - `GET /api/v1/tasks?project=&status=&type=&agent=` lists board tasks.
 - `POST /api/v1/tasks` creates a task and classifies it when no type is given.
 - `GET /api/v1/tasks/{id}` returns task, gates, links, runs, and event timeline.
+  Session link records contain stable session/run identifiers used to query the
+  existing bounded session detail/activity APIs rather than copying transcript
+  content into `tasks.db`.
 - `PATCH /api/v1/tasks/{id}` updates editable fields or requests a transition;
   stale revisions return `409`.
 - `POST /api/v1/tasks/{id}/events` accepts normalized agent events with an

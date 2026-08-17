@@ -64,6 +64,8 @@ tasks through this path.
 - The coordinator owns only the gated `Review`/`Verify` to `Done` transition.
 - Tickets require a navigable detail view, and task metrics require a dedicated
   aggregate dashboard with filtering.
+- Ticket detail must show the actual active or linked agent session and recent
+  bounded activity so the operator can see what the assignee is doing.
 
 ### Evidence and gaps
 
@@ -81,7 +83,8 @@ tasks through this path.
 - `task-metrics-api`: assigned at `Ready`/`Understand` with the same ownership
   rule and API/test evidence requirement.
 - `task-ticket-views`: assigned at `Ready`/`Understand` for detail and filtered
-  aggregate metrics routes, including accessibility and localization.
+  aggregate metrics routes, live agent-session activity, accessibility, and
+  localization.
 
 These tickets count toward reliability only if their event timelines show the
 implementing agent performing every pre-completion transition. The coordinator

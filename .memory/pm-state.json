@@ -19,7 +19,7 @@
     {"id": "S6", "title": "Validate and harden v1", "status": "pending", "dependsOn": ["S1", "S2", "S3", "S4", "S5"]},
     {"id": "S7", "title": "Activate managed runtime from the daemon", "status": "in_progress", "owner": "task_adapters", "dependsOn": ["S3", "S5"]},
     {"id": "S8", "title": "Expose task detail and aggregate metrics", "status": "in_progress", "owner": "task_backend", "dependsOn": ["S1", "S2"]},
-    {"id": "S9", "title": "Add ticket detail and metrics dashboard routes", "status": "in_progress", "owner": "task_frontend", "dependsOn": ["S4", "S8"]}
+    {"id": "S9", "title": "Add ticket detail, live session, and metrics dashboard routes", "status": "in_progress", "owner": "task_frontend", "dependsOn": ["S4", "S8"]}
   ],
   "artifacts": [
     {"phase": "prd", "file": "docs/task-control-plane/SPEC.md", "approvedAt": 1786986371},
@@ -32,7 +32,8 @@
     {"at": 1786986371, "event": "PRD, architecture, and story gates auto-approved."},
     {"at": 1786988473, "event": "Integrated storage/API, Kanban UI, harness runtime, CLI/MCP, and dispatch slices."},
     {"at": 1786988473, "event": "User established lifecycle authority: implementing agents own Understand through Verify; coordinator owns only gated Verify to Done."},
-    {"at": 1786988473, "event": "Created and assigned three full-lifecycle dogfood tickets for runtime activation, metrics API, and ticket detail/dashboard views."}
+    {"at": 1786988473, "event": "Created and assigned three full-lifecycle dogfood tickets for runtime activation, metrics API, and ticket detail/dashboard views."},
+    {"at": 1786989184, "event": "User expanded ticket detail to require the actual active or linked agent session and bounded live activity."}
   ],
   "worktrees": [
     "/Users/angelhermon/dev/agentsview-task-backend",
@@ -55,5 +56,5 @@
     "auto_approved_gates": ["prd", "architecture", "story_creation"]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1786988473
+  "updatedAt": 1786989184
 }

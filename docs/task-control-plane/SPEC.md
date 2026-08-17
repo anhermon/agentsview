@@ -54,13 +54,17 @@ configured completion gates pass.
 
 The user can create, edit, reorder, filter, and transition tickets on a
 project-scoped Kanban board. Activating a ticket opens a stable detail route
-with its fields, gates, evidence, activity, session links, and task timings.
+with its fields, gates, evidence, activity, session links, task timings, and a
+bounded live view of the managed or linked agent session doing the work.
 
 Acceptance: Given a project workflow, when a ticket transition is valid, then
 the board persists it, records an event, and updates connected clients. When it
 is invalid, the API returns a typed conflict without modifying the ticket.
 Given a visible card, pointer or keyboard activation navigates to that ticket's
-detail route without changing its workflow state.
+detail route without changing its workflow state. Given an active or linked
+agent session, the detail route shows its harness, run state, current phase,
+last activity, recent bounded activity, and a link to the full session view;
+task/session SSE updates refresh it without a page reload or heartbeat.
 
 ### FR-002 — Project workflows
 
