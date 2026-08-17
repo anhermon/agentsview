@@ -1,0 +1,59 @@
+{
+  "id": "proj-a17e2026",
+  "name": "AgentsView Task Control Plane",
+  "goal": "Build a thin local-first, event-driven agent task control plane with a Kanban board, harness-neutral agent management, compact context, session intelligence, task types, phases, gates, and metrics.",
+  "phase": "implementation",
+  "repoContext": "Clean AgentsView main checkout: Go daemon/CLI, SQLite archive, REST/SSE server, provider parsers, and Svelte 5 frontend. Task state will use a separate local tasks.db.",
+  "epics": [
+    "Task control plane",
+    "Harness runtime",
+    "Kanban experience",
+    "Session intelligence and analytics"
+  ],
+  "stories": [
+    {"id": "S1", "title": "Persist tasks and workflows", "status": "integrated", "owner": "task_backend"},
+    {"id": "S2", "title": "Expose the task REST API", "status": "integrated", "owner": "task_backend", "dependsOn": ["S1"]},
+    {"id": "S3", "title": "Add the event-driven harness runtime", "status": "integrated", "owner": "task_adapters"},
+    {"id": "S4", "title": "Add the Kanban and agent UI", "status": "integrated", "owner": "task_frontend", "dependsOn": ["S2"]},
+    {"id": "S5", "title": "Connect tasks, sessions, intelligence, and runtime", "status": "in_progress", "dependsOn": ["S1", "S2", "S3"]},
+    {"id": "S6", "title": "Validate and harden v1", "status": "pending", "dependsOn": ["S1", "S2", "S3", "S4", "S5"]},
+    {"id": "S7", "title": "Activate managed runtime from the daemon", "status": "in_progress", "owner": "task_adapters", "dependsOn": ["S3", "S5"]},
+    {"id": "S8", "title": "Expose task detail and aggregate metrics", "status": "in_progress", "owner": "task_backend", "dependsOn": ["S1", "S2"]},
+    {"id": "S9", "title": "Add ticket detail and metrics dashboard routes", "status": "in_progress", "owner": "task_frontend", "dependsOn": ["S4", "S8"]}
+  ],
+  "artifacts": [
+    {"phase": "prd", "file": "docs/task-control-plane/SPEC.md", "approvedAt": 1786986371},
+    {"phase": "architecture", "file": "docs/task-control-plane/ARCHITECTURE.md", "approvedAt": 1786986371},
+    {"phase": "story_creation", "file": "docs/task-control-plane/STORIES.md", "approvedAt": 1786986371}
+  ],
+  "clarifications": [],
+  "eventLog": [
+    {"at": 1786986371, "event": "User directed remaining questions be inferred and implementation begin with subagents."},
+    {"at": 1786986371, "event": "PRD, architecture, and story gates auto-approved."},
+    {"at": 1786988473, "event": "Integrated storage/API, Kanban UI, harness runtime, CLI/MCP, and dispatch slices."},
+    {"at": 1786988473, "event": "User established lifecycle authority: implementing agents own Understand through Verify; coordinator owns only gated Verify to Done."},
+    {"at": 1786988473, "event": "Created and assigned three full-lifecycle dogfood tickets for runtime activation, metrics API, and ticket detail/dashboard views."}
+  ],
+  "worktrees": [
+    "/Users/angelhermon/dev/agentsview-task-backend",
+    "/Users/angelhermon/dev/agentsview-task-frontend",
+    "/Users/angelhermon/dev/agentsview-task-adapters",
+    "/Users/angelhermon/dev/agentsview-task-activation",
+    "/Users/angelhermon/dev/agentsview-task-metrics-api",
+    "/Users/angelhermon/dev/agentsview-task-ticket-views"
+  ],
+  "config": {
+    "baseBranch": "main",
+    "maxParallel": 3,
+    "autoMerge": false,
+    "squashMerge": false,
+    "maxRetries": 3,
+    "requireUserApproval": []
+  },
+  "metadata": {
+    "notes": ["Single-user and local-machine v1; no hosting."],
+    "auto_approved_gates": ["prd", "architecture", "story_creation"]
+  },
+  "createdAt": 1786986371,
+  "updatedAt": 1786988473
+}
