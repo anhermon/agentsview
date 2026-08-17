@@ -89,3 +89,54 @@ tasks through this path.
 These tickets count toward reliability only if their event timelines show the
 implementing agent performing every pre-completion transition. The coordinator
 will evaluate evidence and gates before moving them to `Done`.
+
+## Iteration 3 — QA closure and the missing-session root cause — 2026-08-17
+
+### QA evidence
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Focused Go tests: `internal/taskcontrol`, `internal/taskrun`, `internal/server`, `cmd/agentsview` | 3311 passed, 0 failed |
+| 2 | `go vet -tags fts5 ./...` (CGO_ENABLED=1) | Clean |
+| 3 | Frontend: svelte-check, kit-ui-check, unit tests, production build | 0/0 errors, 2355/2355 tests, build succeeded |
+| 4 | Full integrated Go suite | 10848 passed, 48 packages, 0 failed |
+| 5 | `internal/remotesync/TestPreparedHTTPSyncRebuildContributor` flake | Rerun clean; did not recur |
+
+`task-runtime-activation`, `task-metrics-api`, and `task-ticket-views` were
+each evaluated against concrete commit/test evidence and moved to
+`Done`/`Deliver`.
+
+### Root cause: no task ever shows an agent session
+
+The user reported the ticket-detail Agent Session panel stays empty for
+in-progress tasks. This is not a frontend defect. `RunCoordinator.
+persistSessionLink` (`internal/taskcontrol/run_coordinator.go:228`) is only
+reachable from `persistEvent`, which only fires when the managed runtime
+dispatches a real `taskrun.Event` off a live spawned process. The daemon's
+`task_runtime.enabled` has never been turned on in this session, no worktree
+has ever been created under a `worktree_root`, and no run has ever dispatched
+an event — confirmed by inspecting `/api/v1/tasks/task-runtime-integration`,
+whose `agent_session.active` is `false` and `session_links` is empty despite
+the task showing `In Progress`. Every task's session data is empty because
+none has ever been populated, not because it fails to render.
+
+The fix is not a UI patch. It is the same decisive step called out at the top
+of this file's prior handoff: enable `[task_runtime]` in the daemon config
+and let it spawn one real agent process against an assigned ticket.
+
+### Shipped this iteration
+
+- Kanban `TaskCard` now pulses a blue border/glow when a task has an active
+  session link (`activeSessions.length > 0`), respecting
+  `prefers-reduced-motion`. Verified live via a temporary DOM class toggle in
+  the browser (no real session data was created or touched). It will start
+  animating for real once the managed runtime links a live session.
+
+### Still queued
+
+- Enable the managed runtime opt-in config and fire the decisive dogfood run:
+  one ticket, one implementing agent, self-driven Understand → Verify, with
+  provenance-checked event actors and real `deliverable.attached` evidence.
+- `task-runtime-integration` remains stale at `In Progress`/`Execute` with no
+  worktree and no run ever created — reconcile once the runtime is live.
+- `task-deliverable-attachments` implementation has not started.

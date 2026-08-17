@@ -17,9 +17,10 @@
     {"id": "S4", "title": "Add the Kanban and agent UI", "status": "integrated", "owner": "task_frontend", "dependsOn": ["S2"]},
     {"id": "S5", "title": "Connect tasks, sessions, intelligence, and runtime", "status": "in_progress", "dependsOn": ["S1", "S2", "S3"]},
     {"id": "S6", "title": "Validate and harden v1", "status": "pending", "dependsOn": ["S1", "S2", "S3", "S4", "S5"]},
-    {"id": "S7", "title": "Activate managed runtime from the daemon", "status": "in_progress", "owner": "task_adapters", "dependsOn": ["S3", "S5"]},
-    {"id": "S8", "title": "Expose task detail and aggregate metrics", "status": "in_progress", "owner": "task_backend", "dependsOn": ["S1", "S2"]},
-    {"id": "S9", "title": "Add ticket detail, live session, and metrics dashboard routes", "status": "in_progress", "owner": "task_frontend", "dependsOn": ["S4", "S8"]}
+    {"id": "S7", "title": "Activate managed runtime from the daemon", "status": "integrated", "owner": "task_adapters", "dependsOn": ["S3", "S5"]},
+    {"id": "S8", "title": "Expose task detail and aggregate metrics", "status": "integrated", "owner": "task_backend", "dependsOn": ["S1", "S2"]},
+    {"id": "S9", "title": "Add ticket detail, live session, and metrics dashboard routes", "status": "integrated", "owner": "task_frontend", "dependsOn": ["S4", "S8"]},
+    {"id": "S10", "title": "Attach deliverables to task details (screenshots, git diffs, bounded files/links)", "status": "pending", "owner": "task_frontend", "dependsOn": ["S8", "S9"]}
   ],
   "artifacts": [
     {"phase": "prd", "file": "docs/task-control-plane/SPEC.md", "approvedAt": 1786986371},
@@ -33,7 +34,11 @@
     {"at": 1786988473, "event": "Integrated storage/API, Kanban UI, harness runtime, CLI/MCP, and dispatch slices."},
     {"at": 1786988473, "event": "User established lifecycle authority: implementing agents own Understand through Verify; coordinator owns only gated Verify to Done."},
     {"at": 1786988473, "event": "Created and assigned three full-lifecycle dogfood tickets for runtime activation, metrics API, and ticket detail/dashboard views."},
-    {"at": 1786989184, "event": "User expanded ticket detail to require the actual active or linked agent session and bounded live activity."}
+    {"at": 1786989184, "event": "User expanded ticket detail to require the actual active or linked agent session and bounded live activity."},
+    {"at": 1786992494, "event": "QA pass: focused + full Go suites (10848 tests), vet, frontend check/kit-ui/tests/build all green; remotesync flake did not recur. Moved task-runtime-activation, task-metrics-api, task-ticket-views to Done/Deliver with gate evidence."},
+    {"at": 1786992494, "event": "Root-caused why ticket detail shows no agent session for any task, including In Progress ones: RunCoordinator.persistSessionLink only fires from a live taskrun.Event emitted by the managed runtime, which has never been activated (daemon task_runtime.enabled stays off by default, no worktree ever created). Not a frontend bug; session_links/agent_session are correctly empty because no real run has ever dispatched."},
+    {"at": 1786992494, "event": "Added a pulsing border animation to Kanban TaskCard when an active session link exists, respecting prefers-reduced-motion; verified live in browser via temporary DOM class toggle, no real session data touched."},
+    {"at": 1786992494, "event": "Created S10 for the new task-deliverable-attachments ticket. Decisive next step remains unstarted: enable [task_runtime] in the daemon config and let it spawn a real agent process against one ticket to prove the full lifecycle + session-link + deliverable-attachment loop."}
   ],
   "worktrees": [
     "/Users/angelhermon/dev/agentsview-task-backend",
@@ -56,5 +61,5 @@
     "auto_approved_gates": ["prd", "architecture", "story_creation"]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1786989184
+  "updatedAt": 1786992494
 }

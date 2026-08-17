@@ -118,6 +118,7 @@
 <article
   class="task-card"
   class:busy
+  class:agent-active={activeSessions.length > 0}
   draggable={true}
   ondragstart={ondragstart}
   aria-label={task.title}
@@ -292,6 +293,22 @@
 
   .task-card.busy {
     opacity: 0.68;
+  }
+
+  .task-card.agent-active {
+    border-color: var(--accent-blue);
+    animation: agent-active-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes agent-active-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-blue) 35%, transparent); }
+    50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-blue) 0%, transparent); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .task-card.agent-active {
+      animation: none;
+    }
   }
 
   .card-topline,
