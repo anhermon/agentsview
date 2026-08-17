@@ -1,14 +1,70 @@
 package taskrun
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+type WorktreePreparer interface {
+	Prepare(context.Context, string, string) error
+}
+
+type WorktreePreparerFunc func(context.Context, string, string) error
+
+func (f WorktreePreparerFunc) Prepare(ctx context.Context, taskID, path string) error {
+	return f(ctx, taskID, path)
+}
+
+// GitWorktreePreparer creates detached task worktrees from a configured local
+// repository. It performs no network access and is only used when explicitly
+// supplied to NewRuntimeWithPreparer.
+type GitWorktreePreparer struct {
+	Repository string
+	Ref        string
+}
+
+func (p GitWorktreePreparer) Prepare(ctx context.Context, _ string, path string) error {
+	repository, err := filepath.Abs(strings.TrimSpace(p.Repository))
+	if err != nil {
+		return fmt.Errorf("resolve repository: %w", err)
+	}
+	info, err := os.Stat(repository)
+	if err != nil {
+		return fmt.Errorf("inspect repository: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("repository is not a directory")
+	}
+	if _, err := os.Stat(path); err == nil {
+		if _, gitErr := os.Stat(filepath.Join(path, ".git")); gitErr == nil {
+			return nil
+		}
+		return errors.New("worktree path already exists but is not a git worktree")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect worktree: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create worktree root: %w", err)
+	}
+	ref := strings.TrimSpace(p.Ref)
+	if ref == "" {
+		ref = "HEAD"
+	}
+	output, err := exec.CommandContext(
+		ctx, "git", "-C", repository, "worktree", "add", "--detach", path, ref,
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
 
 // ResolveWorktreePath returns a stable, task-specific path below root. The
 // digest prevents collisions between task IDs that produce the same slug.

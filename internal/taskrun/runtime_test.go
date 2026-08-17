@@ -212,6 +212,49 @@ func TestRuntimeRejectsInvalidTriggerAndMissingCapability(t *testing.T) {
 	assert.False(t, active)
 }
 
+func TestRuntimePreparesWorktreeBeforeLaunch(t *testing.T) {
+	t.Parallel()
+
+	adapter := newFakeAdapter("fake")
+	var preparedPath string
+	preparer := WorktreePreparerFunc(func(_ context.Context, taskID, path string) error {
+		assert.Equal(t, "TASK-PREPARE", taskID)
+		preparedPath = path
+		return nil
+	})
+	runtime, err := NewRuntimeWithPreparer(t.TempDir(), preparer, adapter)
+	require.NoError(t, err)
+	run, err := runtime.Dispatch(context.Background(), Trigger{
+		Type: TriggerAssignment, AdapterID: adapter.ID(), Envelope: testEnvelope("TASK-PREPARE"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, run.Worktree, preparedPath)
+	assert.Equal(t, preparedPath, adapter.lastLaunch().Worktree)
+	adapter.finish(run.ID, EventCompleted)
+	collectEvents(t, run.Events)
+}
+
+func TestRuntimePreparerFailureReleasesReservation(t *testing.T) {
+	t.Parallel()
+
+	adapter := newFakeAdapter("fake")
+	preparer := WorktreePreparerFunc(func(context.Context, string, string) error {
+		return errors.New("cannot prepare")
+	})
+	runtime, err := NewRuntimeWithPreparer(t.TempDir(), preparer, adapter)
+	require.NoError(t, err)
+	trigger := Trigger{
+		Type: TriggerAssignment, AdapterID: adapter.ID(), Envelope: testEnvelope("TASK-PREPARE-FAIL"),
+	}
+	_, err = runtime.Dispatch(context.Background(), trigger)
+	require.ErrorContains(t, err, "cannot prepare")
+	_, active := runtime.ActiveRun("TASK-PREPARE-FAIL")
+	assert.False(t, active)
+	assert.Equal(t, 0, adapter.launchCount())
+	_, err = runtime.Dispatch(context.Background(), trigger)
+	require.ErrorContains(t, err, "cannot prepare")
+}
+
 func testEnvelope(taskID string) TaskEnvelope {
 	return TaskEnvelope{
 		TaskID:  taskID,

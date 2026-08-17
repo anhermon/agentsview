@@ -10,6 +10,7 @@ import (
 
 type Runtime struct {
 	worktreeRoot string
+	preparer     WorktreePreparer
 	adapters     map[string]Adapter
 
 	mu     sync.Mutex
@@ -22,11 +23,18 @@ type activeRun struct {
 }
 
 func NewRuntime(worktreeRoot string, adapters ...Adapter) (*Runtime, error) {
+	return NewRuntimeWithPreparer(worktreeRoot, nil, adapters...)
+}
+
+func NewRuntimeWithPreparer(
+	worktreeRoot string, preparer WorktreePreparer, adapters ...Adapter,
+) (*Runtime, error) {
 	if worktreeRoot == "" {
 		return nil, errors.New("worktree root is required")
 	}
 	runtime := &Runtime{
 		worktreeRoot: worktreeRoot,
+		preparer:     preparer,
 		adapters:     make(map[string]Adapter, len(adapters)),
 		active:       make(map[string]activeRun),
 	}
@@ -73,6 +81,12 @@ func (r *Runtime) Dispatch(ctx context.Context, trigger Trigger) (*Run, error) {
 	// An empty reservation closes the race between concurrent launch calls.
 	r.active[taskID] = activeRun{adapter: adapter}
 	r.mu.Unlock()
+	if r.preparer != nil {
+		if err := r.preparer.Prepare(ctx, taskID, worktree); err != nil {
+			r.release(taskID, "")
+			return nil, fmt.Errorf("prepare task worktree: %w", err)
+		}
+	}
 
 	request := LaunchRequest{Envelope: trigger.Envelope, Trigger: trigger.Type, Worktree: worktree}
 	// A dispatch context controls admission, not the lifetime of an accepted

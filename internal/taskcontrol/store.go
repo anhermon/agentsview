@@ -297,6 +297,25 @@ func (s *Store) ListAgents(ctx context.Context) ([]Agent, error) {
 	return result, rows.Err()
 }
 
+func (s *Store) Agent(ctx context.Context, id string) (Agent, error) {
+	var agent Agent
+	var created, updated string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, harness, mode, created_at, updated_at
+		FROM agents WHERE id = ?`, id).Scan(
+		&agent.ID, &agent.Name, &agent.Harness, &agent.Mode, &created, &updated,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Agent{}, ErrNotFound
+	}
+	if err != nil {
+		return Agent{}, err
+	}
+	agent.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	agent.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	return agent, nil
+}
+
 func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 	task.Project = strings.TrimSpace(task.Project)
 	task.Title = strings.TrimSpace(task.Title)

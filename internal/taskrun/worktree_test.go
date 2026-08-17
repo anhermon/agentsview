@@ -1,7 +1,9 @@
 package taskrun
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -46,4 +48,31 @@ func TestValidateWorktreePathRejectsSymlinkEscape(t *testing.T) {
 	err := ValidateWorktreePath(root, filepath.Join(escape, "task"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "symlink")
+}
+
+func TestGitWorktreePreparerCreatesIdempotentDetachedWorktree(t *testing.T) {
+	t.Parallel()
+
+	repository := t.TempDir()
+	runWorktreeGit(t, repository, "init")
+	require.NoError(t, os.WriteFile(filepath.Join(repository, "README.md"), []byte("fixture\n"), 0o644))
+	runWorktreeGit(t, repository, "add", "README.md")
+	runWorktreeGit(t, repository, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
+	root := t.TempDir()
+	path, err := ResolveWorktreePath(root, "TASK-GIT")
+	require.NoError(t, err)
+	preparer := GitWorktreePreparer{Repository: repository}
+
+	require.NoError(t, preparer.Prepare(context.Background(), "TASK-GIT", path))
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	require.NoError(t, err)
+	assert.False(t, info.IsDir(), "linked worktree uses a .git file")
+	require.NoError(t, preparer.Prepare(context.Background(), "TASK-GIT", path))
+}
+
+func runWorktreeGit(t *testing.T, repository string, args ...string) {
+	t.Helper()
+	commandArgs := append([]string{"-C", repository}, args...)
+	output, err := exec.Command("git", commandArgs...).CombinedOutput()
+	require.NoError(t, err, string(output))
 }

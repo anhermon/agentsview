@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"go.kenn.io/agentsview/internal/taskcontrol"
+	"go.kenn.io/agentsview/internal/taskrun"
 )
 
 type itemsBody[T any] struct {
@@ -201,6 +203,33 @@ func (s *Server) taskControlStore() (*taskcontrol.Store, error) {
 	return s.taskStore, s.taskStoreErr
 }
 
+func (s *Server) taskRunCoordinator(store *taskcontrol.Store) *taskcontrol.RunCoordinator {
+	if s.taskRuntime == nil {
+		return nil
+	}
+	s.taskRunnerOnce.Do(func() {
+		runner := taskcontrol.NewRunCoordinator(s.baseCtx, store, s.taskRuntime, s.emitTasks)
+		s.mu.Lock()
+		s.taskRunner = runner
+		s.mu.Unlock()
+	})
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.taskRunner
+}
+
+func (s *Server) triggerTaskRun(
+	store *taskcontrol.Store, taskID string, triggerType taskrun.TriggerType,
+) {
+	runner := s.taskRunCoordinator(store)
+	if runner == nil {
+		return
+	}
+	if err := runner.Trigger(taskID, triggerType); err != nil {
+		log.Printf("task %s trigger %s did not start a run: %v", taskID, triggerType, err)
+	}
+}
+
 func taskAPIError(err error) error {
 	switch {
 	case errors.Is(err, taskcontrol.ErrNotFound):
@@ -288,6 +317,10 @@ func (s *Server) humaCreateTask(ctx context.Context, in *taskCreateInput) (*crea
 	if err != nil {
 		return nil, taskAPIError(err)
 	}
+	if task.AssigneeID != "" {
+		s.triggerTaskRun(store, task.ID, taskrun.TriggerAssignment)
+		task, _ = store.Task(ctx, task.ID)
+	}
 	views, err := s.taskViews(ctx, []taskcontrol.Task{task})
 	if err != nil {
 		return nil, internalError("expand task", err)
@@ -317,12 +350,24 @@ func (s *Server) humaPatchTask(ctx context.Context, in *taskPatchInput) (*jsonOu
 	if err != nil {
 		return nil, internalError("open task store", err)
 	}
+	assignmentChanged := false
+	if in.Body.AssigneeID != nil && strings.TrimSpace(*in.Body.AssigneeID) != "" {
+		before, taskErr := store.Task(ctx, in.ID)
+		if taskErr != nil {
+			return nil, taskAPIError(taskErr)
+		}
+		assignmentChanged = before.AssigneeID != strings.TrimSpace(*in.Body.AssigneeID)
+	}
 	task, err := store.PatchTask(ctx, in.ID, taskcontrol.TaskPatch{Title: in.Body.Title,
 		Description: in.Body.Description, TaskType: in.Body.Type, Status: in.Body.Status,
 		Phase: in.Body.Phase, Priority: in.Body.Priority, AssigneeID: in.Body.AssigneeID,
 		ActiveRunID: in.Body.ActiveRunID})
 	if err != nil {
 		return nil, taskAPIError(err)
+	}
+	if assignmentChanged {
+		s.triggerTaskRun(store, task.ID, taskrun.TriggerAssignment)
+		task, _ = store.Task(ctx, task.ID)
 	}
 	views, err := s.taskViews(ctx, []taskcontrol.Task{task})
 	if err != nil {
@@ -517,6 +562,9 @@ func (s *Server) humaAppendTaskEvent(ctx context.Context, in *taskEventCreateInp
 	event, err := store.AppendEvent(ctx, taskcontrol.TaskEvent{TaskID: in.ID, Type: in.Body.Type, Source: in.Body.Source, Payload: in.Body.Payload})
 	if err != nil {
 		return nil, taskAPIError(err)
+	}
+	if triggerType, ok := taskcontrol.TriggerTypeForEvent(event.Type); ok {
+		s.triggerTaskRun(store, event.TaskID, triggerType)
 	}
 	s.emitTasks()
 	return &createdOutput[taskcontrol.TaskEvent]{Status: http.StatusCreated, Body: event}, nil

@@ -30,6 +30,7 @@ import (
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/taskcontrol"
+	"go.kenn.io/agentsview/internal/taskrun"
 	"go.kenn.io/agentsview/internal/web"
 	"go.kenn.io/kit/daemon"
 )
@@ -170,6 +171,9 @@ type Server struct {
 	taskStoreErr      error
 	ownsTaskStore     bool
 	taskGateEvaluator taskcontrol.GateEvaluator
+	taskRuntime       *taskrun.Runtime
+	taskRunnerOnce    gosync.Once
+	taskRunner        *taskcontrol.RunCoordinator
 }
 
 type insightGenerationOptionsContextKey struct{}
@@ -315,6 +319,12 @@ func WithTaskStore(store *taskcontrol.Store) Option {
 // injected evaluator, the API accepts explicit approved/passed decisions.
 func WithTaskGateEvaluator(evaluator taskcontrol.GateEvaluator) Option {
 	return func(s *Server) { s.taskGateEvaluator = evaluator }
+}
+
+// WithTaskRuntime enables event-driven task execution. A nil/default runtime
+// leaves all existing server modes storage-only and starts no agent process.
+func WithTaskRuntime(runtime *taskrun.Runtime) Option {
+	return func(s *Server) { s.taskRuntime = runtime }
 }
 
 // WithBaseContext sets the base context for all incoming HTTP
@@ -1184,6 +1194,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Unlock()
 	if engine != nil {
 		engine.Close()
+	}
+	s.mu.RLock()
+	taskRunner := s.taskRunner
+	s.mu.RUnlock()
+	if taskRunner != nil {
+		if closeErr := taskRunner.Close(ctx); err == nil {
+			err = closeErr
+		}
 	}
 	s.mu.Lock()
 	taskStore := s.taskStore
