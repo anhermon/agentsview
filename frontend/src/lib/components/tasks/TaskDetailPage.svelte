@@ -52,6 +52,17 @@
     return () => events.close();
   });
 
+  function countPhaseReworks(events: TaskEvent[], fromPhase: string, toPhase: string): number {
+    let count = 0;
+    for (const event of events) {
+      if (event.type !== "task.updated") continue;
+      const before = event.payload?.before as { phase?: string } | undefined;
+      const after = event.payload?.after as { phase?: string } | undefined;
+      if (before?.phase === fromPhase && after?.phase === toPhase) count++;
+    }
+    return count;
+  }
+
   function gateTone(status: TaskGateStatus): "success" | "danger" | "warning" | "neutral" {
     if (status === "passed") return "success";
     if (status === "failed") return "danger";
@@ -240,11 +251,24 @@
             <ul class="gate-list">
               {#each task.gates as gate (gate.id)}
                 <li>
-                  <div><strong>{gate.name}</strong><small>{gate.kind}{gate.required ? ` · ${m.tasks_required()}` : ""}</small></div>
-                  <Chip size="xs" tone={gateTone(gate.status)} uppercase={false}>{gate.status}</Chip>
+                  <div class="gate-row">
+                    <div><strong>{gate.name}</strong><small>{gate.kind}{gate.required ? ` · ${m.tasks_required()}` : ""}</small></div>
+                    <Chip size="xs" tone={gateTone(gate.status)} uppercase={false}>{gate.status}</Chip>
+                  </div>
+                  {#if gate.rule}<p class="gate-rule">{m.tasks_gate_rule()}: <code>{gate.rule}</code></p>{/if}
+                  {#if gate.status !== "pending"}
+                    <p class="gate-evidence">
+                      {m.tasks_gate_evidence()}: {evidenceSummary(gate.evidence)}
+                      {#if gate.evaluated_at}<span> · {formatTimestamp(gate.evaluated_at)}</span>{/if}
+                    </p>
+                  {/if}
                 </li>
               {/each}
             </ul>
+            {#if countPhaseReworks(task.events, "Verify", "Execute") > 0}
+              {@const verifyReworkCount = countPhaseReworks(task.events, "Verify", "Execute")}
+              <p class="verify-rework">{m.tasks_verify_rework({ count: verifyReworkCount, countLabel: String(verifyReworkCount) })}</p>
+            {/if}
           {/if}
         </section>
 
@@ -334,7 +358,12 @@
   .timing-summary div { flex-direction: column; gap: 2px; padding: 0; }
   .timing-summary dd { color: var(--text-primary); font-size: 15px; font-weight: 650; text-align: left; }
   .phase-times, .gate-list, .evidence-list, .session-list { margin: 0; padding: 4px 12px 10px; list-style: none; }
-  .phase-times li, .gate-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border-subtle); }
+  .phase-times li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border-subtle); }
+  .gate-list li { padding: 7px 0; border-top: 1px solid var(--border-subtle); }
+  .gate-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .gate-rule, .gate-evidence { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; overflow-wrap: anywhere; }
+  .gate-rule code { color: var(--text-secondary); font-family: var(--font-mono); }
+  .verify-rework { margin: 0; padding: 8px 12px 10px; color: var(--accent-amber); font-size: 10px; border-top: 1px solid var(--border-subtle); }
   .phase-times span, .phase-times strong { font-size: 10px; }
   .gate-list div { display: flex; min-width: 0; flex-direction: column; }
   .gate-list strong { color: var(--text-secondary); font-size: 11px; }

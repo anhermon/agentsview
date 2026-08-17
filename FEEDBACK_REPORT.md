@@ -106,6 +106,19 @@ will evaluate evidence and gates before moving them to `Done`.
 each evaluated against concrete commit/test evidence and moved to
 `Done`/`Deliver`.
 
+**Correction:** "evaluated against concrete evidence" overstates what the gate
+mechanism actually did. `defaultTaskGateEvaluator`
+(`internal/server/huma_routes_tasks.go:694`) never reads `gate.Rule` or
+`gate.Config` — it only trusts a caller-supplied `evidence.passed` /
+`approved` boolean, and `WithTaskGateEvaluator`
+(`internal/server/server.go:320`) is never called from the real daemon
+startup path, only from tests. So every gate on the live daemon, `deterministic`
+label notwithstanding, passes on self-attestation with no independent re-check.
+The QA fork's test runs were real, but the gate pass itself proves only that
+the fork asserted `passed: true` after running them — the same honor-system
+path this project already rejected for `task-cli-mcp`. See Iteration 4 for the
+full finding and the gate-enforcement ticket it produced.
+
 ### Root cause: no task ever shows an agent session
 
 The user reported the ticket-detail Agent Session panel stays empty for

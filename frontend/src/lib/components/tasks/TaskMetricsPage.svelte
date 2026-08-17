@@ -29,7 +29,7 @@
     if (router.params.from && router.params.to) {
       return { mode: "custom", from: router.params.from, to: router.params.to };
     }
-    return { mode: "relative", days: 30 };
+    return { mode: "relative", days: 0 };
   }
 
   function optionList(values: string[], allLabel: string): TypeaheadOption[] {
@@ -126,6 +126,10 @@
     return Math.max(1, ...Object.values(values));
   }
 
+  const maxPhaseAverage = $derived(
+    Math.max(1, ...(metrics?.timing.phase_time.map((item) => item.average_ms) ?? [])),
+  );
+
   onMount(() => {
     syncURL();
     void load();
@@ -188,7 +192,12 @@
             </div>
             {#each metrics.timing.phase_time as item (item.phase)}
               <div class="phase-row" role="row">
-                <span role="cell"><strong>{item.phase}</strong></span><span role="cell">{formatDuration(item.average_ms)}</span><span role="cell">{formatDuration(item.min_ms)} – {formatDuration(item.max_ms)}</span><span role="cell">{item.samples}</span>
+                <span role="cell"><strong>{item.phase}</strong></span>
+                <span role="cell" class="phase-average">
+                  {formatDuration(item.average_ms)}
+                  <span class="bar"><span style={`width:${Math.max(3, item.average_ms / maxPhaseAverage * 100)}%`}></span></span>
+                </span>
+                <span role="cell">{formatDuration(item.min_ms)} – {formatDuration(item.max_ms)}</span><span role="cell">{item.samples}</span>
               </div>
             {/each}
           </div>
@@ -239,6 +248,7 @@
   .phase-row:first-child { border-top: 0; }
   .phase-row span, .phase-row strong { color: var(--text-secondary); font-size: 10px; }
   .phase-head span { color: var(--text-muted); font-weight: 600; }
+  .phase-average { display: flex; flex-direction: column; gap: 4px; }
   .distribution-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
   .distribution ul { display: flex; margin: 0; padding: 6px 12px 12px; flex-direction: column; gap: 8px; list-style: none; }
   .distribution li { display: flex; flex-direction: column; gap: 4px; }
