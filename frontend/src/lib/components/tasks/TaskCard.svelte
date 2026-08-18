@@ -138,6 +138,13 @@
 
   <h3>{task.title}</h3>
 
+  {#if activeSessions.length > 0}
+    <p class="active-agent" title={assigneeLabel}>
+      <span class="active-agent-dot" aria-hidden="true"></span>
+      {assigneeLabel}
+    </p>
+  {/if}
+
   <div class="phase-block">
     <div class="phase-heading">
       <span>{m.tasks_phase()}</span>
@@ -344,6 +351,26 @@
     font-weight: 650;
     line-height: 1.35;
     overflow-wrap: anywhere;
+  }
+
+  .active-agent {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .active-agent-dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    background: var(--accent-blue);
+    border-radius: 50%;
   }
 
   .phase-block {

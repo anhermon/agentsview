@@ -77,6 +77,7 @@ describe("TaskCard", () => {
     expect(screen.getByText("Focused checks pass")).toBeTruthy();
     expect(screen.getByText(/Live dogfood/)).toBeTruthy();
     expect(screen.getByText("1 active session")).toBeTruthy();
+    expect(screen.getByText("Codex · codex")).toBeTruthy();
 
     await fireEvent.click(screen.getByRole("button", { name: "Move task to next column" }));
     expect(onmove).toHaveBeenCalledWith("review");
