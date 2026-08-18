@@ -208,6 +208,12 @@
       "type": "finding",
       "summary": "merge-validate ticket (task_b77f905235f68f156c6b023f) merged 99d1e520 into main successfully -- verified independently (go build/vet, npm run check/build all clean, git log on main confirms 99d1e520 HEAD) -- but the ticket itself ended Blocked with agent.run.failed exit status 1, immediately after an agent.run.activity line reading result: success. Task event log is too coarse to diagnose why: only terse role markers (assistant/result: success) are recorded, no actual message/tool-output content. This is a real tooling gap, same shape as the user-reported card-visibility gap -- the board shows a contradictory/opaque failure state with no actionable detail. Dev server has HMR so main is already serving the merged animation; did not attempt to re-verify visually myself per user instruction to validate personally. Also dispatched two new real tickets same session: task_b8e83ebf48db8f76a553d190 (show agent/model on card face, agent-claude-card-badge) and task_23e4c47ba589aad986ab4dd4 (render animation mockups for user selection, agent-claude-anim-mockups), both still In Progress.",
       "updatedAt": 1787067600
+    },
+    {
+      "ts": 1787068200,
+      "type": "finding",
+      "summary": "Reassigning a task to the SAME agent-id that already holds it (task_23e4c47ba589aad986ab4dd4 -> agent-claude-anim-mockups) is a no-op for managed-runtime dispatch: task assign and even task transition back to In Progress left active_run_id=None both times. Only assigning to a FRESH, never-before-used agent id (agent-claude-anim-mockups-v2) actually spawned a new run (active_run_id set). Root cause not dug into (likely: dispatch triggers on assignee_id transitioning from empty/different -> X, not on a no-op reassignment to the same X). Practical workflow implication: when sending review feedback back for a fix-pass, register a new agent id per fix-pass rather than reassigning the same one, or the task silently sits with no worker despite looking assigned/in-progress on the board.",
+      "updatedAt": 1787068200
     }
   ],
   "worktrees": [
@@ -237,5 +243,5 @@
     ]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1787067600
+  "updatedAt": 1787068200
 }
