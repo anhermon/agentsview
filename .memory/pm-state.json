@@ -238,6 +238,12 @@
       "type": "finding",
       "summary": "User correctly caught that I was not actually monitoring runs, just polling status/phase -- I had waved away a 12-minute Understand-phase stall as \"probably just thorough investigation\" without checking the raw event stream. Root cause when actually checked: internal/taskrun/command_adapter.go:213 relays the Claude CLI stream-json system/subtype lines verbatim; the model-badge run (session fe6f78b2, run 90b7a9d1) hit a genuine Claude-CLI-reported api_retry condition (Anthropic API transient failure -- rate limit/overload/network, absorbed by the CLI own backoff) and sat silent for 10m37s (16:42:14->16:52:51 events 1823->1824) before recovering. Not visible in the session transcript export at all (its a stream control message, not a conversation message) -- only in the live agent.run.activity event feed. Board UI gives zero visual distinction between real deep work, silent API-retry backoff, and a dead process -- all read as \"phase: X, N minutes ago\". Two concrete corrections: (1) my own Monitor polling must check for event-stream staleness (no new agent.run.activity event within a threshold, e.g. 3-5 min) as an explicit alert condition, not just phase/status; (2) surfacing api_retry / stall state distinctly in the board UI itself would be a real, evidence-backed product improvement -- not filed as a ticket yet, flagged for user to prioritize.",
       "updatedAt": 1787159700
+    },
+    {
+      "ts": 1787159435,
+      "type": "finding",
+      "summary": "Round-3 dogfood (reused-agent test, task-dogfood assigned to already-used agent-claude-anim-mockups): added agentsview task gate list|create|evaluate CLI (commit efbaf61c), the missing piece of the create/assign/progress/gate/complete cycle -- gates previously needed raw curl. Avoided a real nested harness spawn by creating agent_5e521ddba31a64fc25b91e3a with an unregistered harness (\"manual\", mode=external) for demo tickets; confirmed assignment to it fails dispatch cleanly server-side (no adapter registered) rather than launching a subprocess -- assignmentChanged always calls Trigger() regardless of agent.Mode, so mode alone does not gate real dispatch, only the harness/adapter id does. Sharper root cause on the known no-gate-update-API issue: server.ruleGateEvaluator (internal/server/task_gate_evaluator.go) runs a deterministic gates Rule verbatim via sh -c in the repo/worktree dir whenever task_runtime.repository is configured, and completely ignores the --evidence/--approved passed to evaluate -- a prose Rule string (not a real shell command) fails with exit 127 and, since gates cannot be updated or deleted, permanently blocks that tasks completion. Hit this live on task_440ad81146da6a038ca132d0 (real gate-CLI ticket, code complete/tested/committed but left Blocked, not faked Done) and proved the success path clean on a second ticket, task_7de422afa7df268f8731c8cc, which ran refused-then-passed gate evaluation through to Done. task-dogfood itself left at Review/Verify per instructions, not Done. NOTE: this finding was originally written by the fix-pass agent into its own worktree pm-state.json but the subsequent merge into main silently dropped it (git ort resolved the conflicting hunk in favor of main) -- re-added manually after independent verification (go build/vet clean, gate CLI tested live against the real running daemon). Lesson: merging a worktree that diverged on pm-state.json needs an explicit check that both sides eventLog entries survived, not just a clean merge exit code.",
+      "updatedAt": 1787159435
     }
   ],
   "worktrees": [
@@ -267,5 +273,5 @@
     ]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1787159700
+  "updatedAt": 1787159435
 }
