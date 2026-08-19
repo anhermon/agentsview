@@ -244,6 +244,12 @@
       "type": "finding",
       "summary": "Round-3 dogfood (reused-agent test, task-dogfood assigned to already-used agent-claude-anim-mockups): added agentsview task gate list|create|evaluate CLI (commit efbaf61c), the missing piece of the create/assign/progress/gate/complete cycle -- gates previously needed raw curl. Avoided a real nested harness spawn by creating agent_5e521ddba31a64fc25b91e3a with an unregistered harness (\"manual\", mode=external) for demo tickets; confirmed assignment to it fails dispatch cleanly server-side (no adapter registered) rather than launching a subprocess -- assignmentChanged always calls Trigger() regardless of agent.Mode, so mode alone does not gate real dispatch, only the harness/adapter id does. Sharper root cause on the known no-gate-update-API issue: server.ruleGateEvaluator (internal/server/task_gate_evaluator.go) runs a deterministic gates Rule verbatim via sh -c in the repo/worktree dir whenever task_runtime.repository is configured, and completely ignores the --evidence/--approved passed to evaluate -- a prose Rule string (not a real shell command) fails with exit 127 and, since gates cannot be updated or deleted, permanently blocks that tasks completion. Hit this live on task_440ad81146da6a038ca132d0 (real gate-CLI ticket, code complete/tested/committed but left Blocked, not faked Done) and proved the success path clean on a second ticket, task_7de422afa7df268f8731c8cc, which ran refused-then-passed gate evaluation through to Done. task-dogfood itself left at Review/Verify per instructions, not Done. NOTE: this finding was originally written by the fix-pass agent into its own worktree pm-state.json but the subsequent merge into main silently dropped it (git ort resolved the conflicting hunk in favor of main) -- re-added manually after independent verification (go build/vet clean, gate CLI tested live against the real running daemon). Lesson: merging a worktree that diverged on pm-state.json needs an explicit check that both sides eventLog entries survived, not just a clean merge exit code.",
       "updatedAt": 1787159435
+    },
+    {
+      "ts": 1787160000,
+      "type": "result",
+      "summary": "Merged both round-3 dogfood results into main: gate CLI (efbaf61c, merge ec4a9872) and model-on-badge (0127b96e). Both independently verified: go build/vet clean, relevant Go test packages passing, npm run check clean, TaskCard.test.ts 4/4 passing, gate CLI tested live against the real running daemon, and the model badge confirmed live on the users own board via fresh screenshot showing \"Claude . Live Badge Check . claude-sonnet-5\" instead of the old harness-only label. One pre-existing, unrelated test failure found and ruled out during verification: TestDoSyncConfiguredFullUnifiedHTTPUsesManifestDeltaAndOrderedProgress fails on both pre- and post-merge commits (confirmed via a disposable worktree at c162b853) -- not a regression from this session work, left as-is. Merge hygiene note: both worktrees pm-state.json edits were silently dropped by git ort merge resolution (favored mains side); manually restored the gate-CLI agents own finding afterward. Lesson confirmed and reinforced this round: after merging a worktree, diff the merge commit for files edited on both sides (not just run checks) to catch silent content loss, not just build breakage.",
+      "updatedAt": 1787160000
     }
   ],
   "worktrees": [
@@ -273,5 +279,5 @@
     ]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1787159435
+  "updatedAt": 1787160000
 }
