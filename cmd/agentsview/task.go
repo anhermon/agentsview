@@ -72,6 +72,7 @@ func newTaskCommandWithDeps(deps taskCommandDeps) *cobra.Command {
 		newTaskShowCommand(deps), newTaskUpdateCommand(deps),
 		newTaskTransitionCommand(deps), newTaskAssignCommand(deps),
 		newTaskEventCommand(deps), newTaskCompleteCommand(deps),
+		newTaskGateCommand(deps),
 	)
 	return cmd
 }
@@ -317,6 +318,100 @@ func newTaskEventCommand(deps taskCommandDeps) *cobra.Command {
 	cmd.Flags().StringVar(&eventType, "type", "", "Event type, for example agent.progress")
 	cmd.Flags().StringVar(&source, "source", "agent", "Event source")
 	cmd.Flags().StringVar(&payloadJSON, "payload", "", "JSON object payload")
+	return cmd
+}
+
+func newTaskGateCommand(deps taskCommandDeps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "gate", Short: "Manage task completion gates", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+	}
+	cmd.AddCommand(
+		newTaskGateListCommand(deps), newTaskGateCreateCommand(deps), newTaskGateEvaluateCommand(deps),
+	)
+	return cmd
+}
+
+func newTaskGateListCommand(deps taskCommandDeps) *cobra.Command {
+	return &cobra.Command{
+		Use: "list <task-id>", Short: "List a task's completion gates", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			svc, err := taskService(cmd, deps)
+			if err != nil {
+				return err
+			}
+			gates, err := svc.ListGates(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
+				Items []taskcontrol.Gate `json:"items"`
+			}{Items: gates})
+		},
+	}
+}
+
+func newTaskGateCreateCommand(deps taskCommandDeps) *cobra.Command {
+	var name, kind, rule string
+	var required bool
+	var sortOrder int
+	cmd := &cobra.Command{
+		Use: "create <task-id>", Short: "Create a task completion gate", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(name) == "" {
+				return errors.New("--name is required")
+			}
+			svc, err := taskService(cmd, deps)
+			if err != nil {
+				return err
+			}
+			gate, err := svc.CreateGate(cmd.Context(), taskcontrol.Gate{
+				TaskID: args[0], Name: name, Kind: taskcontrol.GateKind(kind),
+				Rule: rule, Required: required, SortOrder: sortOrder,
+			})
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(gate)
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "", "Gate name")
+	cmd.Flags().StringVar(&kind, "kind", string(taskcontrol.GateKindDeterministic), "Gate kind: deterministic, human, or llm")
+	cmd.Flags().StringVar(&rule, "rule", "", "Rule identifier evaluated by the gate")
+	cmd.Flags().BoolVar(&required, "required", true, "Whether the gate blocks completion until it passes")
+	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "Display order among a task's gates")
+	return cmd
+}
+
+func newTaskGateEvaluateCommand(deps taskCommandDeps) *cobra.Command {
+	var evidenceJSON string
+	var approved bool
+	cmd := &cobra.Command{
+		Use: "evaluate <task-id> <gate-id>", Short: "Evaluate a task completion gate", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			evidence := map[string]any{}
+			if evidenceJSON != "" {
+				if err := json.Unmarshal([]byte(evidenceJSON), &evidence); err != nil {
+					return fmt.Errorf("invalid --evidence JSON: %w", err)
+				}
+			}
+			var approvedPtr *bool
+			if cmd.Flags().Changed("approved") {
+				approvedPtr = &approved
+			}
+			svc, err := taskService(cmd, deps)
+			if err != nil {
+				return err
+			}
+			gate, err := svc.EvaluateGate(cmd.Context(), args[0], args[1], approvedPtr, evidence)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(gate)
+		},
+	}
+	cmd.Flags().StringVar(&evidenceJSON, "evidence", "", "JSON object evidence, for example {\"passed\":true}")
+	cmd.Flags().BoolVar(&approved, "approved", false, "Explicit human approval, overrides evidence.passed")
 	return cmd
 }
 

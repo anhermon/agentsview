@@ -21,6 +21,9 @@ type TaskService interface {
 	UpdateTask(context.Context, string, TaskPatch) (Task, error)
 	AppendTaskEvent(context.Context, TaskEvent) (TaskEvent, error)
 	CompleteTask(context.Context, string, string, string) (Task, error)
+	ListGates(context.Context, string) ([]Gate, error)
+	CreateGate(context.Context, Gate) (Gate, error)
+	EvaluateGate(ctx context.Context, taskID, gateID string, approved *bool, evidence map[string]any) (Gate, error)
 }
 
 type HTTPClient struct {
@@ -123,6 +126,44 @@ func (c *HTTPClient) CompleteTask(
 
 func taskPath(id string) string {
 	return "/api/v1/tasks/" + url.PathEscape(strings.TrimSpace(id))
+}
+
+type gateListResponse struct {
+	Items []Gate `json:"items"`
+}
+
+func (c *HTTPClient) ListGates(ctx context.Context, taskID string) ([]Gate, error) {
+	var response gateListResponse
+	if err := c.do(ctx, http.MethodGet, taskPath(taskID)+"/gates", nil, &response); err != nil {
+		return nil, err
+	}
+	if response.Items == nil {
+		response.Items = []Gate{}
+	}
+	return response.Items, nil
+}
+
+func (c *HTTPClient) CreateGate(ctx context.Context, gate Gate) (Gate, error) {
+	body := map[string]any{
+		"id": gate.ID, "name": gate.Name, "kind": gate.Kind, "rule": gate.Rule,
+		"config": gate.Config, "required": gate.Required, "sort_order": gate.SortOrder,
+	}
+	var created Gate
+	err := c.do(ctx, http.MethodPost, taskPath(gate.TaskID)+"/gates", body, &created)
+	return created, err
+}
+
+func (c *HTTPClient) EvaluateGate(
+	ctx context.Context, taskID, gateID string, approved *bool, evidence map[string]any,
+) (Gate, error) {
+	body := map[string]any{"evidence": evidence}
+	if approved != nil {
+		body["approved"] = *approved
+	}
+	var evaluated Gate
+	err := c.do(ctx, http.MethodPost,
+		taskPath(taskID)+"/gates/"+url.PathEscape(strings.TrimSpace(gateID))+"/evaluate", body, &evaluated)
+	return evaluated, err
 }
 
 func (c *HTTPClient) do(

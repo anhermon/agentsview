@@ -42,6 +42,22 @@ func (f *fakeMCPTaskService) CompleteTask(_ context.Context, id, status, phase s
 	}
 	return taskcontrol.Task{ID: id, Status: status, Phase: phase}, nil
 }
+func (f *fakeMCPTaskService) ListGates(_ context.Context, taskID string) ([]taskcontrol.Gate, error) {
+	return []taskcontrol.Gate{{ID: "gate-1", TaskID: taskID}}, nil
+}
+func (f *fakeMCPTaskService) CreateGate(_ context.Context, gate taskcontrol.Gate) (taskcontrol.Gate, error) {
+	gate.ID = "gate-1"
+	return gate, nil
+}
+func (f *fakeMCPTaskService) EvaluateGate(
+	_ context.Context, taskID, gateID string, approved *bool, evidence map[string]any,
+) (taskcontrol.Gate, error) {
+	status := taskcontrol.GateStatusFailed
+	if (approved != nil && *approved) || evidence["passed"] == true {
+		status = taskcontrol.GateStatusPassed
+	}
+	return taskcontrol.Gate{ID: gateID, TaskID: taskID, Status: status}, nil
+}
 
 func valueOrEmpty(value *string) string {
 	if value == nil {
