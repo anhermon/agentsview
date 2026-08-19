@@ -226,6 +226,12 @@
       "type": "result",
       "summary": "Merged card-badge fix (ad884cff) into main after user asked why they still cant tell which agent/model is on a ticket -- root cause: the fix was built+verified but sat unmerged in its worktree, never deployed. Merged, re-ran go build/go vet/npm run check/TaskCard.test.ts all clean, then created a fresh trivial verification ticket+agent to get a genuine live active session and confirmed via real screenshot on the users own board (localhost:5173) that the badge now renders. Root lesson: independently verifying a fix in an isolated worktree is not the same as it being visible to the user -- must also confirm the merge actually happened and is visible in the environment the user looks at.",
       "updatedAt": 1787157600
+    },
+    {
+      "ts": 1787159000,
+      "type": "finding",
+      "summary": "User caught a real orchestration anti-pattern: this session minted a brand-new task-agent id for nearly every ticket (agent-claude-dogfood, -animation-fix, -merge-validate, -card-badge, -anim-mockups, -anim-mockups-v2, -model-badge, -live-badge-check = 8 in one session), leaving a pile of one-shot agents permanently stuck status=assigned with no role concept -- pure orchestrator habit, not a deliberate design. Tested and confirmed the product does NOT require this: assigning a genuinely different, unassigned task (task-dogfood) to an already-used, now-idle agent (agent-claude-anim-mockups) triggered a real new dispatch (active_run_id set) immediately. The earlier reassign-to-same-agent no-op finding (see prior eventLog entry) is narrower than it looked -- it only blocks reassigning the SAME task back to the SAME agent (a resume/follow-up-on-this-ticket case), not general role-based reuse across different tickets. Corrected approach going forward: maintain a small fixed roster of role-oriented agent ids (e.g. agent-claude-frontend for UI/Svelte work, agent-claude-verify for merge/validate/QA work) and reuse them across many tickets over the session, rather than registering a new agent per ticket. Did not rename/delete the existing one-off agents from this session (in-flight session linkage risk); only changing behavior going forward.",
+      "updatedAt": 1787159000
     }
   ],
   "worktrees": [
@@ -255,5 +261,5 @@
     ]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1787157600
+  "updatedAt": 1787159000
 }
