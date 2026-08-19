@@ -220,6 +220,12 @@
       "type": "result",
       "summary": "Both round-2 dogfood tickets landed and were independently re-verified by me (not just agent self-report): (1) task_b8e83ebf48db8f76a553d190 card-badge -- confirmed via my own screenshot of the worktree dev server that the assignee/model badge now renders on the compact card face; commit ad884cff, unmerged. (2) task_23e4c47ba589aad986ab4dd4 anim-mockups -- Option 4 rotation bug (root cause: @property inherits:false split across parent/pseudo-element) was fixed by a fresh fix-pass agent after I diagnosed and fed back the root cause in the ticket description; confirmed via two of my own zoomed screenshots 1s apart showing the highlight arc genuinely moved position; commit a9bba4ca, unmerged, 5 candidate animations ready for user pick. Neither commit merged to main pending user decision, consistent with the standing rule not to merge without explicit direction.",
       "updatedAt": 1787070000
+    },
+    {
+      "ts": 1787157600,
+      "type": "result",
+      "summary": "Merged card-badge fix (ad884cff) into main after user asked why they still cant tell which agent/model is on a ticket -- root cause: the fix was built+verified but sat unmerged in its worktree, never deployed. Merged, re-ran go build/go vet/npm run check/TaskCard.test.ts all clean, then created a fresh trivial verification ticket+agent to get a genuine live active session and confirmed via real screenshot on the users own board (localhost:5173) that the badge now renders. Root lesson: independently verifying a fix in an isolated worktree is not the same as it being visible to the user -- must also confirm the merge actually happened and is visible in the environment the user looks at.",
+      "updatedAt": 1787157600
     }
   ],
   "worktrees": [
@@ -249,5 +255,5 @@
     ]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1787070000
+  "updatedAt": 1787157600
 }
