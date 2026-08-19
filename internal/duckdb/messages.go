@@ -3,6 +3,7 @@ package duckdb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -265,6 +266,31 @@ func (s *Store) GetResumeModelCounts(
 		return nil, fmt.Errorf("iterating duckdb resume model counts: %w", err)
 	}
 	return counts, nil
+}
+
+// LatestAssistantModel returns the model recorded on the most recent
+// assistant message for sessionID, or "" if none is recorded yet.
+func (s *Store) LatestAssistantModel(
+	ctx context.Context, sessionID string,
+) (string, error) {
+	var model string
+	err := s.queryRowContext(ctx, `
+		SELECT model
+		FROM messages
+		WHERE session_id = ?
+			AND role = 'assistant'
+			AND model != ''
+			AND model != '<synthetic>'
+		ORDER BY ordinal DESC LIMIT 1`,
+		sessionID,
+	).Scan(&model)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("querying duckdb latest assistant model: %w", err)
+	}
+	return model, nil
 }
 
 func scanMessages(rows *sql.Rows) ([]db.Message, error) {

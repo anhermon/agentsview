@@ -12,6 +12,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/taskcontrol"
 )
 
@@ -195,6 +200,55 @@ func TestTaskRoutesWorkflowSessionLinksAndEvents(t *testing.T) {
 	assert.Equal(t, []taskcontrol.SessionLink{link}, detail.SessionLinks)
 	assert.True(t, detail.GateSummary.CompletionReady)
 	assert.False(t, detail.EventsTruncated)
+}
+
+func TestTaskRoutesSurfaceLatestSessionModel(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	database := dbtest.OpenTestDBAt(t, dbPath)
+	engine := sync.NewEngine(database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{parser.AgentClaude: {dir}},
+		Machine:   "test",
+	})
+	store, err := taskcontrol.Open(filepath.Join(dir, "tasks.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	srv := New(config.Config{
+		Host: "127.0.0.1", Port: 0, DataDir: dir, DBPath: dbPath,
+	}, database, engine, WithTaskStore(store))
+
+	require.NoError(t, database.UpsertSession(db.Session{
+		ID: "sess-model-1", Project: "demo", Machine: "local", Agent: "claude",
+	}))
+	require.NoError(t, database.InsertMessages([]db.Message{
+		{SessionID: "sess-model-1", Ordinal: 0, Role: "assistant", Content: "hi", Model: "claude-opus-5"},
+		{SessionID: "sess-model-1", Ordinal: 1, Role: "assistant", Content: "hi again", Model: "claude-sonnet-5"},
+	}))
+
+	taskResponse := taskRouteRequest(t, srv, http.MethodPost, "/api/v1/tasks",
+		map[string]any{"project": "demo", "title": "Model badge"})
+	require.Equal(t, http.StatusCreated, taskResponse.Code, taskResponse.Body.String())
+	task := decodeTaskRouteBody[taskView](t, taskResponse)
+
+	linkResponse := taskRouteRequest(t, srv, http.MethodPost,
+		"/api/v1/tasks/"+task.ID+"/session-links", map[string]any{
+			"session_id": "sess-model-1", "harness": "claude", "method": "explicit",
+		})
+	require.Equal(t, http.StatusCreated, linkResponse.Code, linkResponse.Body.String())
+
+	listResponse := taskRouteRequest(t, srv, http.MethodGet, "/api/v1/tasks?project=demo", nil)
+	require.Equal(t, http.StatusOK, listResponse.Code, listResponse.Body.String())
+	list := decodeTaskRouteBody[itemsBody[taskView]](t, listResponse)
+	require.Len(t, list.Items, 1)
+	assert.Equal(t, "claude-sonnet-5", list.Items[0].Model,
+		"the most recent assistant message's model wins over earlier ones")
+
+	detailResponse := taskRouteRequest(t, srv, http.MethodGet, "/api/v1/tasks/"+task.ID, nil)
+	require.Equal(t, http.StatusOK, detailResponse.Code, detailResponse.Body.String())
+	detail := decodeTaskRouteBody[taskDetailView](t, detailResponse)
+	assert.Equal(t, "claude-sonnet-5", detail.Model)
+	require.NotNil(t, detail.AgentSession)
+	assert.Equal(t, "claude-sonnet-5", detail.AgentSession.Model)
 }
 
 func TestTaskMetricsRouteFiltersAndEmptyData(t *testing.T) {

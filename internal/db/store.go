@@ -41,6 +41,7 @@ type Store interface {
 	GetMessagesWindow(ctx context.Context, sessionID string, w MessageWindow) ([]Message, error)
 	GetAllMessages(ctx context.Context, sessionID string) ([]Message, error)
 	GetResumeModelCounts(ctx context.Context, sessionID string) ([]ModelCount, error)
+	LatestAssistantModel(ctx context.Context, sessionID string) (string, error)
 	GetSessionActivity(ctx context.Context, sessionID string) (*SessionActivityResponse, error)
 
 	// Timing.

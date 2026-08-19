@@ -400,6 +400,31 @@ func (db *DB) GetResumeModelCounts(
 	return counts, nil
 }
 
+// LatestAssistantModel returns the model recorded on the most recent
+// assistant message for sessionID, or "" if none is recorded yet.
+func (db *DB) LatestAssistantModel(
+	ctx context.Context, sessionID string,
+) (string, error) {
+	var model string
+	err := db.getReader().QueryRowContext(ctx, `
+		SELECT model
+		FROM messages
+		WHERE session_id = ?
+			AND role = 'assistant'
+			AND model != ''
+			AND model != '<synthetic>'
+		ORDER BY ordinal DESC LIMIT 1`,
+		sessionID,
+	).Scan(&model)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("querying latest assistant model: %w", err)
+	}
+	return model, nil
+}
+
 // EmbeddableUnit is one embedding document: a single embeddable user
 // message, or a run of contiguous embeddable assistant messages.
 type EmbeddableUnit struct {
