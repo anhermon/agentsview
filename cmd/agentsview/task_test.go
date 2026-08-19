@@ -13,14 +13,20 @@ import (
 )
 
 type fakeTaskService struct {
-	tasks      []taskcontrol.Task
-	created    taskcontrol.Task
-	updatedID  string
-	patch      taskcontrol.TaskPatch
-	event      taskcontrol.TaskEvent
-	completeID string
-	status     string
-	phase      string
+	tasks         []taskcontrol.Task
+	created       taskcontrol.Task
+	updatedID     string
+	patch         taskcontrol.TaskPatch
+	event         taskcontrol.TaskEvent
+	completeID    string
+	status        string
+	phase         string
+	gates         []taskcontrol.Gate
+	createdGate   taskcontrol.Gate
+	evaluatedTask string
+	evaluatedGate string
+	evaluatedOK   *bool
+	evidence      map[string]any
 }
 
 func (f *fakeTaskService) ListTasks(_ context.Context, project string) ([]taskcontrol.Task, error) {
@@ -70,6 +76,31 @@ func (f *fakeTaskService) AppendTaskEvent(_ context.Context, event taskcontrol.T
 func (f *fakeTaskService) CompleteTask(_ context.Context, id, status, phase string) (taskcontrol.Task, error) {
 	f.completeID, f.status, f.phase = id, status, phase
 	return taskcontrol.Task{ID: id, Status: status, Phase: phase}, nil
+}
+func (f *fakeTaskService) ListGates(_ context.Context, taskID string) ([]taskcontrol.Gate, error) {
+	result := []taskcontrol.Gate{}
+	for _, gate := range f.gates {
+		if gate.TaskID == taskID {
+			result = append(result, gate)
+		}
+	}
+	return result, nil
+}
+func (f *fakeTaskService) CreateGate(_ context.Context, gate taskcontrol.Gate) (taskcontrol.Gate, error) {
+	f.createdGate = gate
+	gate.ID = "gate-new"
+	gate.Status = taskcontrol.GateStatusPending
+	return gate, nil
+}
+func (f *fakeTaskService) EvaluateGate(
+	_ context.Context, taskID, gateID string, approved *bool, evidence map[string]any,
+) (taskcontrol.Gate, error) {
+	f.evaluatedTask, f.evaluatedGate, f.evaluatedOK, f.evidence = taskID, gateID, approved, evidence
+	status := taskcontrol.GateStatusFailed
+	if (approved != nil && *approved) || evidence["passed"] == true {
+		status = taskcontrol.GateStatusPassed
+	}
+	return taskcontrol.Gate{ID: gateID, TaskID: taskID, Status: status, Evidence: evidence}, nil
 }
 
 func testTaskCommand(svc taskcontrol.TaskService) *cobra.Command {
@@ -129,6 +160,41 @@ func TestTaskCommandAssignmentTransitionEventAndCompletion(t *testing.T) {
 	assert.Equal(t, "task-1", fake.completeID)
 	assert.Equal(t, "Done", fake.status)
 	assert.Equal(t, "Deliver", fake.phase)
+}
+
+func TestTaskGateCommandsCreateListAndEvaluate(t *testing.T) {
+	fake := &fakeTaskService{}
+
+	out, err := executeCommand(testTaskCommand(fake), "gate", "create", "task-1",
+		"--name", "Tests pass", "--kind", "deterministic", "--rule", "go_test")
+	require.NoError(t, err)
+	assert.Equal(t, "task-1", fake.createdGate.TaskID)
+	assert.Equal(t, "Tests pass", fake.createdGate.Name)
+	assert.True(t, fake.createdGate.Required)
+	var created taskcontrol.Gate
+	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	assert.Equal(t, "gate-new", created.ID)
+
+	fake.gates = []taskcontrol.Gate{{ID: "gate-new", TaskID: "task-1", Name: "Tests pass"}}
+	out, err = executeCommand(testTaskCommand(fake), "gate", "list", "task-1")
+	require.NoError(t, err)
+	var list struct {
+		Items []taskcontrol.Gate `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &list))
+	require.Len(t, list.Items, 1)
+	assert.Equal(t, "gate-new", list.Items[0].ID)
+
+	out, err = executeCommand(testTaskCommand(fake), "gate", "evaluate", "task-1", "gate-new",
+		"--evidence", `{"passed":true,"command":"go test ./..."}`)
+	require.NoError(t, err)
+	assert.Equal(t, "task-1", fake.evaluatedTask)
+	assert.Equal(t, "gate-new", fake.evaluatedGate)
+	assert.Nil(t, fake.evaluatedOK)
+	assert.Equal(t, "go test ./...", fake.evidence["command"])
+	var evaluated taskcontrol.Gate
+	require.NoError(t, json.Unmarshal([]byte(out), &evaluated))
+	assert.Equal(t, taskcontrol.GateStatusPassed, evaluated.Status)
 }
 
 func TestRootRegistersTaskCommand(t *testing.T) {

@@ -312,6 +312,36 @@ func (s *mcpDaemonService) CompleteTask(
 	return svc.CompleteTask(ctx, id, status, phase)
 }
 
+func (s *mcpDaemonService) ListGates(
+	ctx context.Context, taskID string,
+) ([]taskcontrol.Gate, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return svc.ListGates(ctx, taskID)
+}
+
+func (s *mcpDaemonService) CreateGate(
+	ctx context.Context, gate taskcontrol.Gate,
+) (taskcontrol.Gate, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return taskcontrol.Gate{}, err
+	}
+	return svc.CreateGate(ctx, gate)
+}
+
+func (s *mcpDaemonService) EvaluateGate(
+	ctx context.Context, taskID, gateID string, approved *bool, evidence map[string]any,
+) (taskcontrol.Gate, error) {
+	svc, err := s.taskAPI(ctx)
+	if err != nil {
+		return taskcontrol.Gate{}, err
+	}
+	return svc.EvaluateGate(ctx, taskID, gateID, approved, evidence)
+}
+
 func (s *mcpDaemonService) Get(
 	ctx context.Context, id string,
 ) (*service.SessionDetail, error) {
