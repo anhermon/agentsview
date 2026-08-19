@@ -7,13 +7,7 @@ export type TaskStatus =
   | "done"
   | string;
 
-export type TaskPhase =
-  | "understand"
-  | "plan"
-  | "execute"
-  | "verify"
-  | "deliver"
-  | string;
+export type TaskPhase = "understand" | "plan" | "execute" | "verify" | "deliver" | string;
 
 export type TaskGateStatus = "pending" | "passed" | "failed" | "waived";
 
@@ -56,6 +50,7 @@ export interface TaskAgentSession {
   agent_id?: string | null;
   agent_name?: string | null;
   harness?: string | null;
+  model?: string | null;
   run_id?: string | null;
   active: boolean;
   run_state: string;
@@ -85,6 +80,7 @@ export interface Task {
   assignee_id?: string | null;
   assignee_name?: string | null;
   harness?: string | null;
+  model?: string | null;
   last_activity_at?: string | null;
   session_summary?: string | null;
   evidence?: unknown[];
@@ -142,16 +138,7 @@ export interface CreateTaskRequest {
 }
 
 export type UpdateTaskRequest = Partial<
-  Pick<
-    Task,
-    | "title"
-    | "description"
-    | "project"
-    | "type"
-    | "status"
-    | "phase"
-    | "assignee_id"
-  >
+  Pick<Task, "title" | "description" | "project" | "type" | "status" | "phase" | "assignee_id">
 >;
 
 export type TaskAgentStatus = "available" | "working" | "offline" | string;

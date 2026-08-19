@@ -230,6 +230,75 @@ func TestInsertAndGetMessage_ThinkingText(t *testing.T) {
 	assert.Equal(t, "I am pondering", got[0].ThinkingText, "ThinkingText")
 }
 
+func TestLatestAssistantModel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		messages []Message
+		want     string
+	}{
+		{
+			name: "returns the most recent assistant message's model",
+			messages: []Message{
+				{SessionID: "s", Ordinal: 0, Role: "assistant", Model: "claude-opus-5"},
+				{SessionID: "s", Ordinal: 1, Role: "assistant", Model: "claude-sonnet-5"},
+			},
+			want: "claude-sonnet-5",
+		},
+		{
+			name: "skips a later message with an empty model",
+			messages: []Message{
+				{SessionID: "s", Ordinal: 0, Role: "assistant", Model: "claude-opus-5"},
+				{SessionID: "s", Ordinal: 1, Role: "assistant", Model: ""},
+			},
+			want: "claude-opus-5",
+		},
+		{
+			name: "skips a later synthetic model",
+			messages: []Message{
+				{SessionID: "s", Ordinal: 0, Role: "assistant", Model: "claude-opus-5"},
+				{SessionID: "s", Ordinal: 1, Role: "assistant", Model: "<synthetic>"},
+			},
+			want: "claude-opus-5",
+		},
+		{
+			name: "ignores a later user message's model",
+			messages: []Message{
+				{SessionID: "s", Ordinal: 0, Role: "assistant", Model: "claude-opus-5"},
+				{SessionID: "s", Ordinal: 1, Role: "user", Model: "claude-sonnet-5"},
+			},
+			want: "claude-opus-5",
+		},
+		{
+			name: "returns empty when no assistant message has a model",
+			messages: []Message{
+				{SessionID: "s", Ordinal: 0, Role: "assistant", Model: ""},
+			},
+			want: "",
+		},
+		{
+			name: "returns empty for a session with no messages",
+			want: "",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			d := testDB(t)
+			insertSession(t, d, "s", "proj1")
+			if len(test.messages) > 0 {
+				insertMessages(t, d, test.messages...)
+			}
+
+			got, err := d.LatestAssistantModel(context.Background(), "s")
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
 func TestWriteSessionBatchCommitsGoodRowsAndSkipsBadRows(t *testing.T) {
 	d := testDB(t)
 

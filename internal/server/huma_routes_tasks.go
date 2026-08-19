@@ -32,6 +32,7 @@ type taskView struct {
 	AssigneeID     string                    `json:"assignee_id,omitempty"`
 	AssigneeName   string                    `json:"assignee_name,omitempty"`
 	Harness        string                    `json:"harness,omitempty"`
+	Model          string                    `json:"model,omitempty"`
 	ActiveRunID    string                    `json:"active_run_id,omitempty"`
 	LastActivityAt time.Time                 `json:"last_activity_at"`
 	Evidence       []map[string]any          `json:"evidence"`
@@ -54,6 +55,7 @@ type taskAgentSessionView struct {
 	AgentID        string                     `json:"agent_id,omitempty"`
 	AgentName      string                     `json:"agent_name,omitempty"`
 	Harness        string                     `json:"harness,omitempty"`
+	Model          string                     `json:"model,omitempty"`
 	RunID          string                     `json:"run_id,omitempty"`
 	Active         bool                       `json:"active"`
 	RunState       string                     `json:"run_state"`
@@ -328,9 +330,26 @@ func (s *Server) taskViews(ctx context.Context, tasks []taskcontrol.Task) ([]tas
 		if agent, ok := agentByID[task.AssigneeID]; ok {
 			view.AssigneeName, view.Harness = agent.Name, agent.Harness
 		}
+		if sessionID := latestActiveSessionID(links); sessionID != "" {
+			if model, err := s.db.LatestAssistantModel(ctx, sessionID); err == nil {
+				view.Model = model
+			}
+		}
 		views = append(views, view)
 	}
 	return views, nil
+}
+
+// latestActiveSessionID returns the session ID of the most recently created
+// active link, or "" if none are active. links is ordered by created_at
+// ascending, so the last active entry is the most recent.
+func latestActiveSessionID(links []taskcontrol.SessionLink) string {
+	for i := len(links) - 1; i >= 0; i-- {
+		if links[i].Active {
+			return links[i].SessionID
+		}
+	}
+	return ""
 }
 
 func (s *Server) humaListTasks(ctx context.Context, in *taskListInput) (*jsonOutput[itemsBody[taskView]], error) {
@@ -411,6 +430,7 @@ func buildTaskAgentSessionView(view taskView, detail taskcontrol.TaskDetail) *ta
 	}
 	result := &taskAgentSessionView{
 		AgentID: view.AssigneeID, AgentName: view.AssigneeName, Harness: view.Harness,
+		Model: view.Model,
 		RunID: view.ActiveRunID, Active: view.ActiveRunID != "", RunState: "idle",
 		Phase: view.Phase, LastActivityAt: view.LastActivityAt,
 		RecentActivity: []taskcontrol.TaskEvent{}, Links: []taskSessionReferenceView{},

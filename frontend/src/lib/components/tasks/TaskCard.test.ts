@@ -26,27 +26,31 @@ const task: Task = {
     { id: "gate-1", name: "Frontend tests", status: "passed" },
     { id: "gate-2", name: "Live dogfood", status: "failed" },
   ],
-  session_links: [{
-    id: "link-1",
-    task_id: "task-1",
-    session_id: "session-1",
-    harness: "codex",
-    method: "explicit",
-    confidence: 1,
-    active: true,
-    created_at: "2026-08-17T10:00:00Z",
-  }],
+  session_links: [
+    {
+      id: "link-1",
+      task_id: "task-1",
+      session_id: "session-1",
+      harness: "codex",
+      method: "explicit",
+      confidence: 1,
+      active: true,
+      created_at: "2026-08-17T10:00:00Z",
+    },
+  ],
   created_at: "2026-08-17T09:00:00Z",
   updated_at: "2026-08-17T10:00:00Z",
 };
 
-const agents: TaskAgent[] = [{
-  id: "agent-1",
-  name: "Codex",
-  harness: "codex",
-  status: "working",
-  current_task_id: "task-1",
-}];
+const agents: TaskAgent[] = [
+  {
+    id: "agent-1",
+    name: "Codex",
+    harness: "codex",
+    status: "working",
+    current_task_id: "task-1",
+  },
+];
 
 beforeEach(() => {
   Object.defineProperty(globalThis, "ResizeObserver", {
@@ -73,7 +77,9 @@ describe("TaskCard", () => {
 
     expect(screen.getAllByText("Ship event-driven board").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Execute").length).toBeGreaterThan(0);
-    expect(document.querySelector('.phase-track [aria-current="step"]')?.getAttribute("title")).toBe("Execute");
+    expect(
+      document.querySelector('.phase-track [aria-current="step"]')?.getAttribute("title"),
+    ).toBe("Execute");
     expect(screen.getByText("Focused checks pass")).toBeTruthy();
     expect(screen.getByText(/Live dogfood/)).toBeTruthy();
     expect(screen.getByText("1 active session")).toBeTruthy();
@@ -81,6 +87,22 @@ describe("TaskCard", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Move task to next column" }));
     expect(onmove).toHaveBeenCalledWith("review");
+  });
+
+  it("shows the live model instead of the harness once one is recorded", () => {
+    render(TaskCard, {
+      task: { ...task, model: "claude-sonnet-5" },
+      agents,
+      href: "/tasks/task-1",
+      onopen: vi.fn(),
+      onmove: vi.fn(),
+      onphase: vi.fn(),
+      onassign: vi.fn(),
+      ondragstart: vi.fn(),
+    });
+
+    expect(screen.getByText("Codex · claude-sonnet-5")).toBeTruthy();
+    expect(screen.queryByText("Codex · codex")).toBeNull();
   });
 
   it("lets the operator change the universal task phase", async () => {

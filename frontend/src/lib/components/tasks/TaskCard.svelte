@@ -65,7 +65,7 @@
   );
   const assigneeLabel = $derived(
     task.assignee_name
-      ? `${task.assignee_name}${task.harness ? ` · ${task.harness}` : ""}`
+      ? `${task.assignee_name}${task.model ? ` · ${task.model}` : task.harness ? ` · ${task.harness}` : ""}`
       : m.tasks_unassigned(),
   );
 
