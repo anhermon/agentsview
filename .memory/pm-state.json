@@ -232,6 +232,12 @@
       "type": "finding",
       "summary": "User caught a real orchestration anti-pattern: this session minted a brand-new task-agent id for nearly every ticket (agent-claude-dogfood, -animation-fix, -merge-validate, -card-badge, -anim-mockups, -anim-mockups-v2, -model-badge, -live-badge-check = 8 in one session), leaving a pile of one-shot agents permanently stuck status=assigned with no role concept -- pure orchestrator habit, not a deliberate design. Tested and confirmed the product does NOT require this: assigning a genuinely different, unassigned task (task-dogfood) to an already-used, now-idle agent (agent-claude-anim-mockups) triggered a real new dispatch (active_run_id set) immediately. The earlier reassign-to-same-agent no-op finding (see prior eventLog entry) is narrower than it looked -- it only blocks reassigning the SAME task back to the SAME agent (a resume/follow-up-on-this-ticket case), not general role-based reuse across different tickets. Corrected approach going forward: maintain a small fixed roster of role-oriented agent ids (e.g. agent-claude-frontend for UI/Svelte work, agent-claude-verify for merge/validate/QA work) and reuse them across many tickets over the session, rather than registering a new agent per ticket. Did not rename/delete the existing one-off agents from this session (in-flight session linkage risk); only changing behavior going forward.",
       "updatedAt": 1787159000
+    },
+    {
+      "ts": 1787159700,
+      "type": "finding",
+      "summary": "User correctly caught that I was not actually monitoring runs, just polling status/phase -- I had waved away a 12-minute Understand-phase stall as \"probably just thorough investigation\" without checking the raw event stream. Root cause when actually checked: internal/taskrun/command_adapter.go:213 relays the Claude CLI stream-json system/subtype lines verbatim; the model-badge run (session fe6f78b2, run 90b7a9d1) hit a genuine Claude-CLI-reported api_retry condition (Anthropic API transient failure -- rate limit/overload/network, absorbed by the CLI own backoff) and sat silent for 10m37s (16:42:14->16:52:51 events 1823->1824) before recovering. Not visible in the session transcript export at all (its a stream control message, not a conversation message) -- only in the live agent.run.activity event feed. Board UI gives zero visual distinction between real deep work, silent API-retry backoff, and a dead process -- all read as \"phase: X, N minutes ago\". Two concrete corrections: (1) my own Monitor polling must check for event-stream staleness (no new agent.run.activity event within a threshold, e.g. 3-5 min) as an explicit alert condition, not just phase/status; (2) surfacing api_retry / stall state distinctly in the board UI itself would be a real, evidence-backed product improvement -- not filed as a ticket yet, flagged for user to prioritize.",
+      "updatedAt": 1787159700
     }
   ],
   "worktrees": [
@@ -261,5 +267,5 @@
     ]
   },
   "createdAt": 1786986371,
-  "updatedAt": 1787159000
+  "updatedAt": 1787159700
 }
