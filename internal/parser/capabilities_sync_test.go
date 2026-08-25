@@ -53,6 +53,9 @@ func TestProviderSyncSemanticsDeclarations(t *testing.T) {
 		AgentZed: {
 			UnchangedResults: UnchangedResultMTime,
 		},
+		AgentCursorIDE: {
+			UnchangedResults: UnchangedResultMTime,
+		},
 		AgentKiro: {
 			UnchangedResults: UnchangedResultMTime,
 		},
