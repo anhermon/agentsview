@@ -79,6 +79,17 @@ func TestRenderProducesParseableFrontmatterAndDelegatePhrase(t *testing.T) {
 	}
 }
 
+func TestRenderDocumentsToolSourceIdentifierSearch(t *testing.T) {
+	rendered, err := Render(HarnessAgents, "1.2.3")
+	require.NoError(t, err)
+
+	assert.Contains(t, rendered.Content,
+		`agentsview session search "<exact string>" `+
+			`--in tool_input,tool_result --json --limit 8`)
+	assert.Contains(t, rendered.Content,
+		"FTS searches messages only")
+}
+
 func TestRenderUnknownHarness(t *testing.T) {
 	_, err := Render(Harness("bogus"), "1.2.3")
 	require.Error(t, err)
