@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -206,9 +207,15 @@ func parseGeminiJSONL(
 		records = append(records, rec)
 	}
 	if sessionID == "" {
-		return nil, nil, fmt.Errorf(
-			"missing sessionId in %s", path,
+		// Message-only JSONL: every line is a "user"/"gemini" record with
+		// no line carrying the session-level sessionId. There is no
+		// session to build, but the file is not malformed, so skip it
+		// like an empty source rather than failing the whole sync batch.
+		log.Printf(
+			"gemini: skipping %s: no session metadata (message-only file)",
+			path,
 		)
+		return nil, nil, nil
 	}
 
 	messages := make([]ParsedMessage, 0, len(records))

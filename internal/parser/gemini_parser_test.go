@@ -2,6 +2,7 @@ package parser
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -559,6 +560,53 @@ func TestParseGeminiSession_EdgeCases(t *testing.T) {
 		_, _, err := parseGeminiTestSession(t, path, "my_project", "local")
 		assert.Error(t, err)
 	})
+
+	t.Run("message-only JSONL with no session metadata line", func(t *testing.T) {
+		content := strings.Join([]string{
+			`{"id":"u1","timestamp":"2026-04-23T16:12:43.085Z","type":"user","content":[{"text":"hi"}]}`,
+			`{"id":"a1","timestamp":"2026-04-23T16:12:50.158Z","type":"gemini","content":"hello"}`,
+		}, "\n")
+		path := createTestFile(t, "session.jsonl", content)
+		sess, msgs, err := parseGeminiTestSession(t, path, "my_project", "local")
+		require.NoError(t, err)
+		assert.Nil(t, sess)
+		assert.Nil(t, msgs)
+	})
+}
+
+// TestGeminiProviderSkipsMessageOnlyJSONLFile confirms a message-only JSONL
+// source (no session metadata line) surfaces as a clean provider-level skip
+// rather than a Parse error, so it does not abort a reconciliation pass that
+// aborts on any file failure. See internal/sync reconciliation loop.
+func TestGeminiProviderSkipsMessageOnlyJSONLFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(
+		root, "tmp", "hash1", geminiChatsDir, "session-001.jsonl",
+	)
+	content := strings.Join([]string{
+		`{"id":"u1","timestamp":"2026-04-23T16:12:43.085Z","type":"user","content":[{"text":"hi"}]}`,
+		`{"id":"a1","timestamp":"2026-04-23T16:12:50.158Z","type":"gemini","content":"hello"}`,
+	}, "\n")
+	writeSourceFile(t, path, content)
+
+	provider := newGeminiTestProvider(t, root)
+	source, found, err := provider.SourceForReconciliation(
+		context.Background(), path, "my_project",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+
+	fingerprint, err := provider.Fingerprint(context.Background(), source)
+	require.NoError(t, err)
+
+	outcome, err := provider.Parse(context.Background(), ParseRequest{
+		Source:      source,
+		Fingerprint: fingerprint,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, SkipNoSession, outcome.SkipReason)
+	assert.True(t, outcome.ResultSetComplete)
+	assert.Empty(t, outcome.Results)
 }
 
 func TestParseGeminiSession_ContextTokensDelta(t *testing.T) {
