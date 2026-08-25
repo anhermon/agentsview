@@ -108,8 +108,10 @@ func TestSyncEngineAntigravityCLI_HappyPath(t *testing.T) {
 	})
 	assert.Equal(t, 1, stats.Synced)
 
-	// Verify database ingestion
-	assertSessionProject(t, env.db, "antigravity-cli:"+uuid, "/home/user/my-cli-project")
+	// Verify database ingestion. The stored project is normalized through
+	// the shared cwd/worktree resolver, so the raw workspace path collapses
+	// to its basename with dashes folded to underscores.
+	assertSessionProject(t, env.db, "antigravity-cli:"+uuid, "my_cli_project")
 	// Expected messages:
 	// 1. User: "Check workspace status"
 	// 2. Assistant: "listing files now" (with tool calls and thoughts)
@@ -551,7 +553,7 @@ func TestSyncEngineAntigravityCLI_InferredProjectWithoutConversationID(t *testin
 		{
 			name:        "normalized match within window infers project",
 			rowTime:     base.Add(10 * time.Second),
-			wantProject: workspace,
+			wantProject: "inferred_project",
 		},
 		{
 			name:        "match outside 60s window leaves project empty",
@@ -600,7 +602,7 @@ func TestSyncSingleSessionAntigravityCLI_InferredProjectWithoutConversationID(t 
 	// The file-watcher path must persist the inferred project too.
 	require.NoError(t, env.engine.SyncSingleSession(sessionID))
 
-	assertSessionProject(t, env.db, sessionID, "/home/user/inferred-project-single")
+	assertSessionProject(t, env.db, sessionID, "inferred_project_single")
 	assertSessionMessageCount(t, env.db, sessionID, 1)
 }
 
@@ -635,7 +637,7 @@ func TestSyncPathsAntigravityCLIHistoryOnlyUpdateRefreshesProject(t *testing.T) 
 
 	env.engine.SyncPaths([]string{historyPath})
 
-	assertSessionProject(t, env.db, sessionID, "/home/user/history-arrived")
+	assertSessionProject(t, env.db, sessionID, "history_arrived")
 	assertSessionMessageCount(t, env.db, sessionID, 1)
 }
 
@@ -674,8 +676,8 @@ func TestSyncPathsAntigravityCLIHistoryRetagClearsRemovedProject(t *testing.T) {
 		Skipped:       0,
 		Anomalies:     agyCLIUnknownSchemaAnomaly(2),
 	})
-	assertSessionProject(t, env.db, removedSessionID, "/home/user/removed")
-	assertSessionProject(t, env.db, retaggedSessionID, "/home/user/retagged")
+	assertSessionProject(t, env.db, removedSessionID, "removed")
+	assertSessionProject(t, env.db, retaggedSessionID, "retagged")
 
 	updated := base.Add(time.Minute)
 	retaggedHistory := fmt.Sprintf(
@@ -688,7 +690,7 @@ func TestSyncPathsAntigravityCLIHistoryRetagClearsRemovedProject(t *testing.T) {
 	env.engine.SyncPaths([]string{historyPath})
 
 	assertSessionProject(t, env.db, removedSessionID, "")
-	assertSessionProject(t, env.db, retaggedSessionID, "/home/user/retagged-now")
+	assertSessionProject(t, env.db, retaggedSessionID, "retagged_now")
 	assertSessionMessageCount(t, env.db, removedSessionID, 1)
 	assertSessionMessageCount(t, env.db, retaggedSessionID, 1)
 }

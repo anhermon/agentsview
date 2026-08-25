@@ -92,7 +92,9 @@ func parseAntigravityCLITestSessionWithStatus(
 	t *testing.T, path, project, machine string,
 ) (*ParsedSession, []ParsedMessage, []ParsedUsageEvent, AntigravityCLIParseStatus, error) {
 	t.Helper()
-	return newAntigravityCLITestProvider(t).parseSessionWithStatus(path, project, machine)
+	return newAntigravityCLITestProvider(t).parseSessionWithStatus(
+		t.Context(), path, project, machine,
+	)
 }
 
 // parseAntigravityCLITestSession is the no-status convenience wrapper the tests
@@ -406,7 +408,7 @@ func TestAntigravityCLIDiscoverAndParseDB(t *testing.T) {
 	assert.Equal(t, "antigravity-cli:"+id, sess.ID)
 	assert.Equal(t, AgentAntigravityCLI, sess.Agent)
 	assert.Equal(t, dbPath, sess.File.Path)
-	assert.Equal(t, "/tmp/db-proj", sess.Project)
+	assert.Equal(t, "db_proj", sess.Project)
 	require.Len(t, msgs, 2)
 	assert.Equal(t, RoleUser, msgs[0].Role)
 	assert.Equal(t, "db prompt fallback", msgs[0].Content)
@@ -434,7 +436,60 @@ func TestAntigravityCLIProjectFallbackPromptAndProximity(t *testing.T) {
 	sess, msgs, err := parseAntigravityCLITestSession(t, dbPath, "", "m")
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
-	assert.Equal(t, "/tmp/fallback-proj", sess.Project, "should successfully fallback infer project")
+	assert.Equal(t, "fallback_proj", sess.Project, "should successfully fallback infer project")
+}
+
+// TestAntigravityCLIParse_GroupsGitWorktreesUnderOneProject reproduces
+// GitHub issue #1484: two Antigravity CLI sessions recorded from different
+// git worktrees of the same repo must resolve to the same project, matching
+// how the Codex provider already normalizes cwd through
+// ExtractProjectFromCwdWithBranchContext (see
+// TestParseCodexSession_WorktreeBranchFallback).
+func TestAntigravityCLIParse_GroupsGitWorktreesUnderOneProject(t *testing.T) {
+	skipIfNoGit(t)
+
+	root := t.TempDir()
+	mainRepo := filepath.Join(root, "agentsview")
+	mustMkdirAll(t, mainRepo)
+	gitRun(t, mainRepo, "init", "-q", "-b", "main")
+	gitRun(t, mainRepo,
+		"-c", "user.email=test@example.com",
+		"-c", "user.name=Test User",
+		"-c", "commit.gpgsign=false",
+		"commit", "--allow-empty", "-q", "-m", "seed",
+	)
+	worktree := filepath.Join(root, "agentsview-feature")
+	gitRun(t, mainRepo, "worktree", "add", "-q", "-b", "feature", worktree)
+
+	cliRoot := t.TempDir()
+	mustMkdir(t, filepath.Join(cliRoot, "conversations"))
+	mainID := "11111111-2222-3333-4444-555555555555"
+	worktreeID := "66666666-7777-8888-9999-000000000000"
+	mustMkdir(t, filepath.Join(cliRoot, "brain", mainID))
+	mustMkdir(t, filepath.Join(cliRoot, "brain", worktreeID))
+	createAntigravityTestDB(t, filepath.Join(cliRoot, "conversations", mainID+".db"))
+	createAntigravityTestDB(t, filepath.Join(cliRoot, "conversations", worktreeID+".db"))
+	mustWrite(t, filepath.Join(cliRoot, "history.jsonl"), []byte(
+		`{"conversationId":"`+mainID+`","workspace":"`+mainRepo+`"}`+"\n"+
+			`{"conversationId":"`+worktreeID+`","workspace":"`+worktree+`"}`+"\n",
+	))
+
+	files := discoverAntigravityCLITestSessions(t, cliRoot)
+	require.Len(t, files, 2, "discover")
+
+	projects := make(map[string]string, 2)
+	for _, f := range files {
+		sess, _, err := parseAntigravityCLITestSession(t, f.Path, f.Project, "test-machine")
+		require.NoError(t, err, "parse %s", f.Path)
+		projects[f.Path] = sess.Project
+	}
+
+	mainSess := projects[filepath.Join(cliRoot, "conversations", mainID+".db")]
+	worktreeSess := projects[filepath.Join(cliRoot, "conversations", worktreeID+".db")]
+	assert.Equal(t, "agentsview", mainSess, "main checkout project")
+	assert.Equal(t, "agentsview", worktreeSess, "worktree project")
+	assert.Equal(t, mainSess, worktreeSess,
+		"sessions from different worktrees of the same repo must group under one project")
 }
 
 func TestAntigravityCLIProjectFallbackStrictWindow(t *testing.T) {
