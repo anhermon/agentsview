@@ -1997,6 +1997,41 @@ func TestReconcileWatchRootsPreservesSameIDReplacementAtNewPath(t *testing.T) {
 	assertSessionMessageCount(t, env.db, "moved-session", 2)
 }
 
+// TestReconcileWatchRootsSkipsMessageOnlyGeminiFile reproduces
+// kenn-io/agentsview#1518: a Gemini session JSONL file that contains only
+// message records (no line carrying the session-level sessionId) must not
+// abort reconciliation of the rest of the watch root.
+func TestReconcileWatchRootsSkipsMessageOnlyGeminiFile(t *testing.T) {
+	env := setupSingleAgentTestEnv(t, parser.AgentGemini)
+
+	messageOnly := strings.Join([]string{
+		`{"id":"u1","timestamp":"` + tsEarly + `","type":"user","content":[{"text":"hi"}]}`,
+		`{"id":"a1","timestamp":"` + tsEarlyS5 + `","type":"gemini","content":"hello"}`,
+	}, "\n")
+	env.writeGeminiSession(t,
+		filepath.Join("tmp", "hash-broken", "chats", "session-broken.jsonl"),
+		messageOnly,
+	)
+	env.writeGeminiSession(t,
+		filepath.Join("tmp", "hash-ok", "chats", "session-001.json"),
+		testjsonl.GeminiSessionJSON(
+			"reconcile-ok", "hash-ok", tsEarly, tsEarlyS5,
+			[]map[string]any{
+				testjsonl.GeminiUserMsg("u1", tsEarly, "hello"),
+				testjsonl.GeminiAssistantMsg("a1", tsEarlyS5, "hi", nil),
+			},
+		),
+	)
+
+	require.NoError(t, env.engine.ReconcileWatchRoots(
+		t.Context(), []string{env.geminiDir}, false,
+	))
+
+	sess, err := env.db.GetSession(t.Context(), "gemini:reconcile-ok")
+	require.NoError(t, err)
+	require.NotNil(t, sess, "session from the other file in the watch root must sync")
+}
+
 func TestReconcileWatchRootsClaudeDiscoversSymlinkedProjectAndSubagent(t *testing.T) {
 	root := t.TempDir()
 	targetRoot := t.TempDir()
