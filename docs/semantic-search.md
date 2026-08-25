@@ -47,7 +47,9 @@ api_key_env = "OPENAI_API_KEY"    # name of an env var holding the key; omit for
 batch_size = 32                   # inputs per HTTP call (default 32)
 concurrency = 4                   # documents embedded in parallel during a build (default 4)
 timeout = "30s"                   # per-HTTP-call timeout (default "30s")
-max_retries = 3                   # attempts on 429/5xx/network errors; 4xx fails fast (default 3)
+max_retries = 3                   # attempts on 5xx/network errors; 4xx fails fast (default 3)
+                                   # document builds retry a 429 until it clears instead of
+                                   # spending this budget on it; query encoders still count it here
 # ollama_cpu_fallback = true      # Ollama only: retry invalid Metal vectors once on CPU
 
 [vector.embed]
