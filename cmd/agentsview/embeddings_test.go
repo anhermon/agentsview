@@ -228,7 +228,7 @@ func TestNewVectorEncoderWiresOllamaCPUFallback(t *testing.T) {
 				OllamaCPUFallback: true,
 			},
 		},
-	}, "local", "")
+	}, "local", "", false)
 	require.NoError(t, err)
 
 	out, err := enc(context.Background(), []string{"alpha"})
@@ -462,6 +462,78 @@ func TestEmbeddingsBuildDirectEndToEnd(t *testing.T) {
 	cmd.SetArgs(nil)
 	require.NoError(t, cmd.Execute())
 
+	assert.Contains(t, out.String(), "Embedded 2 documents (2 chunks), skipped 0, stale 0")
+	assert.Contains(t, out.String(), "Generation activated.")
+}
+
+// TestEmbeddingsBuildDirectContinuesAfterPartialSuccessAnd429 reproduces the
+// issue #1353 failure shape: a large build has durable partial progress, the
+// next document exhausts the configured retry budget on Voyage-style TPM
+// responses, and the provider eventually accepts that same document. The
+// build must remain alive and finish without an external command retry loop.
+func TestEmbeddingsBuildDirectContinuesAfterPartialSuccessAnd429(t *testing.T) {
+	dataDir := testDataDir(t)
+	seedEmbeddableArchive(t, dataDir)
+
+	var requests atomic.Int32
+	var inputs []string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		require.Len(t, req.Input, 1, "batch_size=1 must isolate each document request")
+		inputs = append(inputs, req.Input[0])
+
+		request := requests.Add(1)
+		if request >= 2 && request <= 4 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, err := io.WriteString(w, `{"detail":"You have exceeded the project's Tokens Per Minute (TPM) rate limit of 3,000,000 tokens per minute for voyage-4-large."}`)
+			require.NoError(t, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"index": 0, "embedding": []float32{1, 2, 3},
+			}},
+		}))
+	}))
+	defer stub.Close()
+
+	writeTestConfig(t, dataDir, fmt.Sprintf(`
+[vector]
+enabled = true
+
+[vector.embeddings]
+model = "test-model"
+dimension = 3
+max_input_chars = 1000
+
+[vector.embeddings.servers.local]
+endpoint = %q
+batch_size = 1
+concurrency = 1
+timeout = "5s"
+max_retries = 1
+`, stub.URL+"/v1"))
+
+	cmd := newEmbeddingsBuildCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(nil)
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, int32(5), requests.Load(),
+		"429 attempts continue beyond max_retries until the provider recovers")
+	assert.Equal(t, []string{
+		"hello there",
+		"hi back\n\nand a follow-up thought",
+		"hi back\n\nand a follow-up thought",
+		"hi back\n\nand a follow-up thought",
+		"hi back\n\nand a follow-up thought",
+	}, inputs, "the already-embedded document is not repeated after the rate limit")
 	assert.Contains(t, out.String(), "Embedded 2 documents (2 chunks), skipped 0, stale 0")
 	assert.Contains(t, out.String(), "Generation activated.")
 }

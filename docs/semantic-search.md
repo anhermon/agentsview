@@ -47,7 +47,7 @@ api_key_env = "OPENAI_API_KEY"    # name of an env var holding the key; omit for
 batch_size = 32                   # inputs per HTTP call (default 32)
 concurrency = 4                   # documents embedded in parallel during a build (default 4)
 timeout = "30s"                   # per-HTTP-call timeout (default "30s")
-max_retries = 3                   # attempts on 429/5xx/network errors; 4xx fails fast (default 3)
+max_retries = 3                   # bounded retries; build-time 429s continue independently (default 3)
 # ollama_cpu_fallback = true      # Ollama only: retry invalid Metal vectors once on CPU
 
 [vector.embed]
@@ -271,6 +271,13 @@ rejected. AgentsView also rejects non-finite components (`NaN` or infinity),
 JSON `null` components, and zero-norm vectors before they can be written to the
 index. Those failures are retried according to `max_retries`; if every attempt
 is invalid, the build stops and leaves the document pending.
+
+During document builds and repairs, HTTP 429 responses do not consume the
+`max_retries` budget. AgentsView honors a valid `Retry-After` header and
+otherwise uses capped exponential backoff, continuing until the provider
+recovers or the build is canceled. Other HTTP errors keep their existing
+bounded or fail-fast behavior. Query encoding remains bounded by `max_retries`
+so an interactive search does not wait indefinitely on a rate-limited provider.
 
 For Ollama on Apple Metal, `ollama_cpu_fallback = true` adds one explicit
 recovery attempt after those normal retries are exhausted. AgentsView keeps the

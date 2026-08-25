@@ -1309,11 +1309,12 @@ func TestEncoderContextCancellationAbortsBackoffPromptly(t *testing.T) {
 	defer srv.Close()
 
 	enc := NewEncoder(EncoderConfig{
-		Endpoint:   srv.URL + "/v1",
-		Model:      "test-model",
-		Dimension:  3,
-		Timeout:    5 * time.Second,
-		MaxRetries: 10,
+		Endpoint:        srv.URL + "/v1",
+		Model:           "test-model",
+		Dimension:       3,
+		Timeout:         5 * time.Second,
+		MaxRetries:      1,
+		RetryRateLimits: true,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -292,8 +292,10 @@ func recallVectorGeneration(
 // newVectorEncoder builds the OpenAI-compatible embeddings encoder for one
 // named server ("" means the default), combining the global model identity
 // and caller-selected role prefix with that server's transport settings.
+// retryRateLimits is enabled for long-running document work, not interactive
+// query encoding.
 func newVectorEncoder(
-	c config.VectorEmbeddingsConfig, serverName, inputPrefix string,
+	c config.VectorEmbeddingsConfig, serverName, inputPrefix string, retryRateLimits bool,
 ) (kitvec.EncodeFunc, error) {
 	name, server, err := c.Server(serverName)
 	if err != nil {
@@ -313,6 +315,7 @@ func newVectorEncoder(
 		RequestDimensions: c.RequestDimensions,
 		Timeout:           timeout,
 		MaxRetries:        server.MaxRetries,
+		RetryRateLimits:   retryRateLimits,
 		InputPrefix:       inputPrefix,
 		InputSuffix:       c.InputSuffix,
 	}), nil
@@ -323,7 +326,7 @@ func newVectorEncoder(
 func newVectorQueryEncoder(
 	c config.VectorEmbeddingsConfig, serverName string,
 ) (kitvec.EncodeFunc, error) {
-	return newVectorEncoder(c, serverName, c.QueryPrefix)
+	return newVectorEncoder(c, serverName, c.QueryPrefix, false)
 }
 
 // newVectorDocumentEncoder builds the default or named server encoder used
@@ -331,7 +334,7 @@ func newVectorQueryEncoder(
 func newVectorDocumentEncoder(
 	c config.VectorEmbeddingsConfig, serverName string,
 ) (kitvec.EncodeFunc, error) {
-	return newVectorEncoder(c, serverName, c.DocumentPrefix)
+	return newVectorEncoder(c, serverName, c.DocumentPrefix, true)
 }
 
 // vectorDocumentEncoderSet builds one document encoder per configured

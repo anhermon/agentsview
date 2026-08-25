@@ -204,8 +204,9 @@ type VectorEmbeddingsServerConfig struct {
 	// Timeout is a parseable duration string applied to each HTTP
 	// call. Default "30s".
 	Timeout string `toml:"timeout" json:"timeout"`
-	// MaxRetries is the maximum total attempts on 429/5xx/network errors
-	// (4xx fails fast); 0 means one attempt. Default 3.
+	// MaxRetries is the maximum total attempts on retryable errors other than
+	// build-time 429 rate limits, which continue until success or cancellation.
+	// Other 4xx responses fail fast; 0 means one attempt. Default 3.
 	MaxRetries int `toml:"max_retries" json:"max_retries"`
 }
 
