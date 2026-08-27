@@ -191,10 +191,10 @@ func (ix *Index) Build(
 		db:    ix.db,
 		spec:  ix.spec,
 	}
-	fillStats, fillErr := kitvec.Fill[string, string](ctx, fillStore, target, wrapped, kitvec.FillOptions[string]{
-		Split:       ix.split,
-		Batch:       o.encodeBatchOptions(),
-		Concurrency: o.Concurrency,
+	fillStats, fillErr := kitvec.Fill[string, string](ctx, fillStore, target, wrapped,
+		kitvec.WithFillSplit[string](ix.split),
+		kitvec.WithFillBatch[string](o.encodeBatchOptions()...),
+		kitvec.WithFillConcurrency[string](o.Concurrency),
 		// A positive BatchSize packs chunks from several documents into one
 		// encode call, so a permanent rejection arrives without knowing which
 		// document caused it. Permitting isolation lets kit re-encode each
@@ -202,9 +202,9 @@ func (ix *Index) Build(
 		// whole fill aborts and one poison document wedges every later build,
 		// which is what OnEncodeError exists to prevent. Transient failures
 		// still abort untouched: they are not worth N extra probe calls.
-		ShouldIsolateBatchError: isPermanentEncodeError,
-		OnEncodeError:           skipPermanentEncodeError,
-	})
+		kitvec.WithFillBatchErrorIsolation[string](isPermanentEncodeError),
+		kitvec.WithFillEncodeError[string](skipPermanentEncodeError),
+	)
 	finish()
 	result.Fill = fillStats
 	if fillErr != nil {
@@ -303,20 +303,21 @@ func (ix *Index) buildInvalidRepair(
 	return result, nil
 }
 
-// encodeBatchOptions applies the provider's aggregate token budget before kit
-// composes requests. Each input is conservatively estimated at the full model
-// context because providers may truncate every oversized input to exactly that
-// length. This makes floor(max_batch_tokens/model_context_tokens) a safe bound
-// independent of document contents or provider tokenization.
-func (o BuildOptions) encodeBatchOptions() kitvec.BatchOptions {
-	batchSize := o.BatchSize
-	if o.ModelContextTokens > 0 && o.MaxBatchTokens > 0 {
-		tokenBound := max(o.MaxBatchTokens/o.ModelContextTokens, 1)
-		if batchSize <= 0 || tokenBound < batchSize {
-			batchSize = tokenBound
-		}
+// encodeBatchOptions configures kit to treat the model context window as the
+// conservative upper bound for every input. Providers may truncate oversized
+// inputs to that length, so the bound keeps the request within their aggregate
+// token cap without depending on provider tokenization.
+func (o BuildOptions) encodeBatchOptions() []kitvec.BatchOption {
+	options := []kitvec.BatchOption{
+		kitvec.WithBatchSize(o.BatchSize),
+		kitvec.WithBatchConcurrency(1),
 	}
-	return kitvec.BatchOptions{BatchSize: batchSize, Concurrency: 1}
+	if o.ModelContextTokens > 0 && o.MaxBatchTokens > 0 {
+		options = append(options, kitvec.WithBatchTokenBudget(
+			o.MaxBatchTokens, o.ModelContextTokens,
+		))
+	}
+	return options
 }
 
 // repairRemaining preserves the accumulated committed target count as a
@@ -348,7 +349,7 @@ func validatingEncoder(enc kitvec.EncodeFunc) kitvec.EncodeFunc {
 	}
 }
 
-// skipPermanentEncodeError implements kitvec.FillOptions.OnEncodeError: a
+// skipPermanentEncodeError handles WithFillEncodeError: a
 // document the embeddings endpoint permanently rejects for input-specific
 // reasons (e.g. a token-window overflow or a content-policy rejection) is
 // skipped — kit stamps it for the generation with no vectors so it stops being
