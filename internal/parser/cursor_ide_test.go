@@ -308,6 +308,8 @@ func TestParseCursorIDEComposer_ToleratesMissingBubbleRow(t *testing.T) {
 	require.NotNil(t, result)
 	require.Len(t, result.Messages, 1)
 	assert.Equal(t, "hello", result.Messages[0].Content)
+	assert.True(t, result.Session.IsTruncated,
+		"a transcript with a missing bubble row must be flagged truncated")
 }
 
 func TestParseCursorIDEComposer_EmptyComposerSkipped(t *testing.T) {

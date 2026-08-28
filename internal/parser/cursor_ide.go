@@ -427,6 +427,7 @@ func parseCursorIDEComposer(
 	}
 
 	var messages []ParsedMessage
+	truncated := false
 	for _, header := range doc.Headers {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -436,6 +437,11 @@ func parseCursorIDEComposer(
 			return nil, err
 		}
 		if bubble == nil {
+			// The transcript has a gap: a header references a bubble row
+			// that was never written or was wiped. Surface the remaining
+			// content, flagged truncated so the engine will not let it
+			// shrink an already archived fuller transcript.
+			truncated = true
 			continue
 		}
 		if bubble.Type == 0 {
@@ -503,6 +509,7 @@ func parseCursorIDEComposer(
 		EndedAt:          endedAt,
 		MessageCount:     len(messages),
 		UserMessageCount: userCount,
+		IsTruncated:      truncated,
 		File: FileInfo{
 			Path:  VirtualSourcePath(dbPath, composerID),
 			Size:  dbInfo.Size(),

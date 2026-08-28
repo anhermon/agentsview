@@ -11344,6 +11344,9 @@ func (e *Engine) processProviderFile(
 	filteredResults := e.dropUnchangedSharedSQLiteResults(
 		file, parsedResults, providerSemantics.UnchangedResults,
 	)
+	filteredResults = e.dropShrinkingTruncatedCursorIDEResults(
+		file, filteredResults,
+	)
 	res := processResult{
 		results:              filteredResults,
 		excludedSessionIDs:   excludedSessionIDs,
@@ -11468,6 +11471,39 @@ func (e *Engine) dropUnchangedSharedSQLiteResults(
 			continue
 		}
 		// Unchanged: drop so the write batch neither rewrites nor recounts it.
+	}
+	return kept
+}
+
+// dropShrinkingTruncatedCursorIDEResults keeps a Cursor IDE composer whose
+// parse saw headers referencing missing bubble rows (a partial cursorDiskKV
+// wipe, flagged IsTruncated by the parser) from force-replacing an archived
+// session with fewer messages than it already has. First-time discovery and
+// a gapped conversation that keeps growing still write, so a wiped database
+// continues to surface its remaining content; only the shrinking overwrite
+// is refused, preserving the fuller archived transcript. The emitted result
+// still counts as present for ownership reconciliation, so the preserved
+// session stays active rather than being marked source-missing.
+func (e *Engine) dropShrinkingTruncatedCursorIDEResults(
+	file parser.DiscoveredFile,
+	results []parser.ParseResult,
+) []parser.ParseResult {
+	if file.Agent != parser.AgentCursorIDE || len(results) == 0 ||
+		e.forceParseRequested(file) {
+		return results
+	}
+	kept := results[:0]
+	for _, r := range results {
+		if !r.Session.IsTruncated {
+			kept = append(kept, r)
+			continue
+		}
+		id := applyIDPrefixToID(e.idPrefix, r.Session.ID)
+		stored, ok := e.db.GetSessionMessageCount(id)
+		if ok && r.Session.MessageCount < stored {
+			continue
+		}
+		kept = append(kept, r)
 	}
 	return kept
 }

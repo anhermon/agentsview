@@ -490,3 +490,104 @@ func TestSyncAllCursorIDEWipedBubblesMarkSourceMissingAndPreserveTranscript(
 	assert.Equal(t, before.MessageCount, archived.MessageCount,
 		"wiped bubble rows must not truncate the archived transcript")
 }
+
+func TestSyncAllCursorIDEPartialBubbleWipeKeepsArchivedTranscript(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{{
+		id: "partial-composer", name: "Partially wiped chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{
+			{id: "b1", bubbleType: 1, text: "ask", createdAt: "2026-06-21T07:27:29.606Z"},
+			{id: "b2", bubbleType: 2, text: "answer", createdAt: "2026-06-21T07:27:31.522Z"},
+		},
+	}})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	sess, err := database.GetSession(t.Context(), "cursor-ide:partial-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, 2, sess.MessageCount)
+
+	// A partial wipe: one bubble row vanishes while the composer document
+	// still references it. The truncated remainder must not replace the
+	// archived fuller transcript.
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`DELETE FROM cursorDiskKV WHERE key = ?`, "bubbleId:partial-composer:b2",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err = database.GetSession(t.Context(), "cursor-ide:partial-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess, "the preserved session must stay active")
+	assert.Equal(t, 2, sess.MessageCount,
+		"a partial bubble wipe must not shrink the archived transcript")
+}
+
+func TestSyncAllCursorIDEGappedComposerSurfacesAndKeepsGrowing(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	composer := cursorIDESyncComposer{
+		id: "gappy-composer", name: "Gappy chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{
+			{id: "missing", bubbleType: 1, text: "never written"},
+			{id: "b1", bubbleType: 1, text: "hello", createdAt: "2026-06-21T07:27:29.606Z"},
+		},
+	}
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{composer})
+	// Remove the first bubble's row so the composer starts out gapped, as a
+	// database wiped before agentsview ever saw it would be.
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`DELETE FROM cursorDiskKV WHERE key = ?`, "bubbleId:gappy-composer:missing",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced,
+		"a gapped composer never seen before must still surface its remaining content")
+	sess, err := database.GetSession(t.Context(), "cursor-ide:gappy-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, 1, sess.MessageCount)
+	assert.True(t, sess.IsTruncated)
+
+	// The user keeps chatting in the gapped conversation: growth must not be
+	// frozen by the shrink guard.
+	composer.bubbles = append(composer.bubbles, cursorIDESyncBubble{
+		id: "b2", bubbleType: 2, text: "reply", createdAt: "2026-06-21T07:27:31.522Z",
+	})
+	writer, err = sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
+		cursorIDEComposerJSON(t, composer), "composerData:gappy-composer",
+	)
+	require.NoError(t, err)
+	raw, err := json.Marshal(map[string]any{
+		"type": 2, "text": "reply", "createdAt": "2026-06-21T07:27:31.522Z",
+	})
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)`,
+		"bubbleId:gappy-composer:b2", raw,
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err = database.GetSession(t.Context(), "cursor-ide:gappy-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Equal(t, 2, sess.MessageCount,
+		"new turns in a gapped conversation must keep syncing")
+}
