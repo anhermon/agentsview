@@ -470,8 +470,8 @@ func TestAntigravityCLIParse_GroupsGitWorktreesUnderOneProject(t *testing.T) {
 	createAntigravityTestDB(t, filepath.Join(cliRoot, "conversations", mainID+".db"))
 	createAntigravityTestDB(t, filepath.Join(cliRoot, "conversations", worktreeID+".db"))
 	mustWrite(t, filepath.Join(cliRoot, "history.jsonl"), []byte(
-		`{"conversationId":"`+mainID+`","workspace":"`+mainRepo+`"}`+"\n"+
-			`{"conversationId":"`+worktreeID+`","workspace":"`+worktree+`"}`+"\n",
+		antigravityCLIHistoryLine(t, mainID, mainRepo)+
+			antigravityCLIHistoryLine(t, worktreeID, worktree),
 	))
 
 	files := discoverAntigravityCLITestSessions(t, cliRoot)
@@ -518,7 +518,7 @@ func TestAntigravityCLIParse_RemoteParseSkipsLocalGitDiscovery(t *testing.T) {
 	id := "11111111-2222-3333-4444-555555555555"
 	createAntigravityTestDB(t, filepath.Join(cliRoot, "conversations", id+".db"))
 	mustWrite(t, filepath.Join(cliRoot, "history.jsonl"), []byte(
-		`{"conversationId":"`+id+`","workspace":"`+worktree+`"}`+"\n",
+		antigravityCLIHistoryLine(t, id, worktree),
 	))
 
 	provider, ok := NewProvider(AgentAntigravityCLI, ProviderConfig{
@@ -1290,6 +1290,20 @@ func TestBuildAntigravityProjectMapRobust(t *testing.T) {
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(p, 0o755), "mkdir %s", p)
+}
+
+// antigravityCLIHistoryLine renders one history.jsonl row with real JSON
+// encoding. Workspace paths must go through json.Marshal because Windows
+// paths contain backslashes, which are escape characters inside a JSON
+// string literal.
+func antigravityCLIHistoryLine(t *testing.T, conversationID, workspace string) string {
+	t.Helper()
+	line, err := json.Marshal(map[string]string{
+		"conversationId": conversationID,
+		"workspace":      workspace,
+	})
+	require.NoError(t, err, "marshal history line")
+	return string(line) + "\n"
 }
 
 func mustWrite(t *testing.T, p string, b []byte) {

@@ -128,6 +128,54 @@ func TestSyncEngineAntigravityCLI_HappyPath(t *testing.T) {
 	assert.Equal(t, "listing files now", msgs[1].Content)
 }
 
+// TestSyncEngineAntigravityCLI_StaleDataVersionRenormalizesProject covers
+// archives written before data version 92: their rows store the raw
+// workspace path as the project, and the source files are unchanged, so no
+// fingerprint movement can trigger a reparse. The stale per-session data
+// version alone must defeat the unchanged-source skip so an ordinary
+// incremental sync replaces the raw path with the normalized project name.
+func TestSyncEngineAntigravityCLI_StaleDataVersionRenormalizesProject(t *testing.T) {
+	env := setupSingleAgentTestEnv(t, parser.AgentAntigravityCLI)
+	uuid := "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb"
+	sessionID := "antigravity-cli:" + uuid
+
+	convDir := filepath.Join(env.antigravityCLIDir, "conversations")
+	require.NoError(t, os.MkdirAll(convDir, 0o755))
+	historyLine := `{"conversationId": "` + uuid +
+		`", "workspace": "/home/user/my-cli-project"}` + "\n"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(env.antigravityCLIDir, "history.jsonl"),
+		[]byte(historyLine), 0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(convDir, uuid+".pb"), []byte("pb-stub"), 0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(convDir, uuid+".trajectory.json"),
+		[]byte(antigravityCLISingleUserTrajectory(uuid, "hello")), 0o644,
+	))
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1})
+	assertSessionProject(t, env.db, sessionID, "my_cli_project")
+
+	// Simulate the archive an older binary left behind: the raw workspace
+	// path stored as the project, stamped with data version 91 -- the last
+	// version whose parser stored workspace paths unnormalized. The current
+	// version must stay above 91 for these rows to reparse.
+	require.NoError(t, env.db.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			"UPDATE sessions SET project = ?, data_version = 91 WHERE id = ?",
+			"/home/user/my-cli-project", sessionID,
+		)
+		return err
+	}))
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1})
+	assertSessionProject(t, env.db, sessionID, "my_cli_project")
+	assert.Equal(t, db.CurrentDataVersion(), env.db.GetSessionDataVersion(sessionID),
+		"reparse must restamp the session at the current data version")
+}
+
 func TestSyncEngineAntigravityCLI_ParentLinkArrivalOrder(t *testing.T) {
 	tests := []struct {
 		name       string
