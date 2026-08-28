@@ -2304,6 +2304,17 @@ func providerVirtualSourceContainerExists(path string) bool {
 	return container != path && parser.IsRegularFile(container)
 }
 
+// providerPersistentSharedContainerSource reports whether source addresses a
+// whole shared-database container whose archive rows are all virtual members:
+// Omnigent's chat.db or Cursor IDE's state.vscdb. Such containers have no
+// stored row under their own physical path, so skip-cache identity carries
+// the container hash and parser data version instead of a stored-row check,
+// and container parses are cached only after their member writes commit.
+func providerPersistentSharedContainerSource(source parser.SourceRef) bool {
+	return parser.IsOmnigentContainerSource(source) ||
+		parser.IsCursorIDEContainerSource(source)
+}
+
 func providerDeletedPhysicalSQLiteSource(
 	agent parser.AgentType, path string,
 ) bool {
@@ -11214,7 +11225,8 @@ func (e *Engine) processProviderFile(
 			omnigentContainerExists :=
 				parser.IsOmnigentContainerSource(source) &&
 					parser.IsRegularFile(providerDiscoveredPath(source))
-			traeContainerExists := file.Agent == parser.AgentTrae &&
+			sharedContainerExists := (file.Agent == parser.AgentTrae ||
+				file.Agent == parser.AgentCursorIDE) &&
 				parser.IsRegularFile(providerDiscoveredPath(source))
 			sourceFileMissing := false
 			if statPath := validatedProviderSourceStatPath(file.Path); statPath != "" {
@@ -11223,14 +11235,14 @@ func (e *Engine) processProviderFile(
 			}
 			if e.pathRewriter != nil ||
 				(providerVirtualSourceContainerExists(file.Path) ||
-					omnigentContainerExists || traeContainerExists ||
+					omnigentContainerExists || sharedContainerExists ||
 					sourceFileMissing) {
 				// The provider re-resolved this exact virtual member against a
 				// still-present shared container, or authoritatively parsed an
-				// empty Omnigent or Trae container, or the backing source itself
-				// is gone. Carry the stored ownership to the recoverable
-				// source-missing seam instead of treating absence as a parser
-				// exclusion.
+				// empty Omnigent, Trae, or Cursor IDE container, or the backing
+				// source itself is gone. Carry the stored ownership to the
+				// recoverable source-missing seam instead of treating absence
+				// as a parser exclusion.
 				missingMembers = owned
 			} else {
 				for _, member := range owned {
@@ -11279,6 +11291,7 @@ func (e *Engine) processProviderFile(
 	// so ownership reconciliation is needed only by real sync engines.
 	if (file.Agent == parser.AgentKiro ||
 		(file.Agent == parser.AgentOmnigent && outcome.ForceReplace) ||
+		(file.Agent == parser.AgentCursorIDE && outcome.ForceReplace) ||
 		(file.Agent == parser.AgentTrae && !e.forceParse)) &&
 		outcome.ResultSetComplete && len(outcome.SourceErrors) == 0 {
 		missingMembers, err = e.providerSourceMissingSessionOwnershipsForCompleteResultWithPreserved(
@@ -11351,14 +11364,15 @@ func (e *Engine) processProviderFile(
 		sourceCwdStored:          cwdDecision.storedCwd,
 		sourceCwdStoredOK:        cwdDecision.storedOK,
 	}
-	if file.Agent == parser.AgentOmnigent && cacheSkip && cleanCache &&
+	if (file.Agent == parser.AgentOmnigent ||
+		file.Agent == parser.AgentCursorIDE) && cacheSkip && cleanCache &&
 		!e.forceParseRequested(file) &&
 		outcome.ResultSetComplete && len(outcome.SourceErrors) == 0 &&
 		fingerprint.Hash != "" {
-		// A whole-container omnigent parse may only be skip-cached after its
-		// member writes commit (cache-after-write); virtual member parses keep
-		// the immediate cache path.
-		res.cacheAfterWrite = parser.IsOmnigentContainerSource(source)
+		// A whole-container parse may only be skip-cached after its member
+		// writes commit (cache-after-write); virtual member parses keep the
+		// immediate cache path.
+		res.cacheAfterWrite = providerPersistentSharedContainerSource(source)
 	}
 	// Incremental-append providers (Claude and Codex) need the stored file
 	// identity so a later sync can detect an atomic file replacement
@@ -12552,10 +12566,10 @@ func providerProcessCacheKey(
 	key = providerProcessCacheKeyWithHash(
 		key, fingerprint, providerSemantics,
 	)
-	// A whole-container omnigent cache identity includes the parser data
-	// version: the container has no stored row of its own, so a restart must
-	// not accept an entry recorded by an older parser version.
-	if parser.IsOmnigentContainerSource(source) {
+	// A whole-container cache identity includes the parser data version: the
+	// container has no stored row of its own, so a restart must not accept
+	// an entry recorded by an older parser version.
+	if providerPersistentSharedContainerSource(source) {
 		separator := "?"
 		if strings.Contains(key, "?") {
 			separator = "&"
@@ -12639,11 +12653,12 @@ func (e *Engine) providerSkipCacheEntryFreshInDB(
 		!providerSemantics.FingerprintHashRequiredForFreshness {
 		return true, false
 	}
-	if parser.IsOmnigentContainerSource(source) {
-		// A whole-container omnigent source has only virtual member rows in
-		// the archive, so its entry is fresh without ever finding a row for
-		// the physical container path: the cache identity already carries the
-		// container hash and parser data version. This is distinct from
+	if providerPersistentSharedContainerSource(source) {
+		// A whole-container source (Omnigent chat.db, Cursor IDE state.vscdb)
+		// has only virtual member rows in the archive, so its entry is fresh
+		// without ever finding a row for the physical container path: the
+		// cache identity already carries the container hash and parser data
+		// version. This is distinct from
 		// ProviderSyncSemantics.SkipCacheFreshWithoutStoredRow below, which
 		// trusts an entry only while NO row exists yet and resumes stored-row
 		// hash validation once the provider persists one.

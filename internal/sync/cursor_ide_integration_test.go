@@ -1,0 +1,453 @@
+package sync_test
+
+import (
+	"database/sql"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/sync"
+)
+
+// cursorIDESyncBubble is one synthetic cursorDiskKV bubble row.
+type cursorIDESyncBubble struct {
+	id         string
+	bubbleType int
+	text       string
+	createdAt  string
+}
+
+// cursorIDESyncComposer is one synthetic composerData document plus its
+// bubbles.
+type cursorIDESyncComposer struct {
+	id        string
+	name      string
+	createdAt int64
+	updatedAt int64
+	bubbles   []cursorIDESyncBubble
+}
+
+func cursorIDEComposerJSON(t *testing.T, c cursorIDESyncComposer) []byte {
+	t.Helper()
+	headers := make([]map[string]any, 0, len(c.bubbles))
+	for _, b := range c.bubbles {
+		headers = append(headers, map[string]any{
+			"bubbleId": b.id, "type": b.bubbleType,
+		})
+	}
+	raw, err := json.Marshal(map[string]any{
+		"fullConversationHeadersOnly": headers,
+		"name":                        c.name,
+		"createdAt":                   c.createdAt,
+		"lastUpdatedAt":               c.updatedAt,
+		"workspaceIdentifier": map[string]any{
+			"uri": map[string]any{"fsPath": "/work/project"},
+		},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+func createCursorIDEStateDB(
+	t *testing.T, dbPath string, composers []cursorIDESyncComposer,
+) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(dbPath), 0o755))
+	db, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+	_, err = db.Exec(
+		`CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)`,
+	)
+	require.NoError(t, err)
+	for _, c := range composers {
+		_, err = db.Exec(
+			`INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)`,
+			"composerData:"+c.id, cursorIDEComposerJSON(t, c),
+		)
+		require.NoError(t, err)
+		for _, b := range c.bubbles {
+			raw, err := json.Marshal(map[string]any{
+				"type": b.bubbleType, "text": b.text, "createdAt": b.createdAt,
+			})
+			require.NoError(t, err)
+			_, err = db.Exec(
+				`INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)`,
+				"bubbleId:"+c.id+":"+b.id, raw,
+			)
+			require.NoError(t, err)
+		}
+	}
+}
+
+func newCursorIDESyncEngine(
+	t *testing.T, root string,
+) (*sync.Engine, *db.DB) {
+	t.Helper()
+	database := dbtest.OpenTestDB(t)
+	engine := sync.NewEngine(database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentCursorIDE: {root},
+		},
+		Machine: "local",
+	})
+	return engine, database
+}
+
+func TestSyncPathsCursorIDEDeletedComposerTombstonesSession(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{
+		{
+			id: "deleted-composer", name: "Deleted chat",
+			createdAt: 1782026756842, updatedAt: 1782026791522,
+			bubbles: []cursorIDESyncBubble{{
+				id: "b1", bubbleType: 1, text: "gone",
+				createdAt: "2026-06-21T07:27:29.606Z",
+			}},
+		},
+		{
+			id: "surviving-composer", name: "Surviving chat",
+			createdAt: 1782026756842, updatedAt: 1782026801522,
+			bubbles: []cursorIDESyncBubble{{
+				id: "b1", bubbleType: 1, text: "kept",
+				createdAt: "2026-06-21T07:27:29.606Z",
+			}},
+		},
+	})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 2, engine.SyncAll(t.Context(), nil).Synced)
+	beforeDelete, err := database.GetSessionFull(
+		t.Context(), "cursor-ide:deleted-composer",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, beforeDelete)
+
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	for _, key := range []string{
+		"composerData:deleted-composer", "bubbleId:deleted-composer:b1",
+	} {
+		_, err = writer.Exec(`DELETE FROM cursorDiskKV WHERE key = ?`, key)
+		require.NoError(t, err)
+	}
+	require.NoError(t, writer.Close())
+
+	engine.SyncPaths([]string{dbPath})
+
+	archived, err := database.GetSessionFull(
+		t.Context(), "cursor-ide:deleted-composer",
+	)
+	require.NoError(t, err)
+	assertSourceMissingState(t, archived)
+	assert.Equal(t, beforeDelete.MessageCount, archived.MessageCount,
+		"source loss must retain the archived transcript")
+	surviving, err := database.GetSessionFull(
+		t.Context(), "cursor-ide:surviving-composer",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, surviving)
+	assert.Nil(t, surviving.SourceMissingAt)
+}
+
+func TestSyncPathsCursorIDEDeletedPhysicalDBPreservesSessions(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{{
+		id: "archived-composer", name: "Archived chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{{
+			id: "b1", bubbleType: 1, text: "hello",
+			createdAt: "2026-06-21T07:27:29.606Z",
+		}},
+	}})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	require.NoError(t, os.Remove(dbPath))
+
+	engine.SyncPaths([]string{dbPath})
+
+	sess, err := database.GetSession(t.Context(), "cursor-ide:archived-composer")
+	require.NoError(t, err)
+	assert.NotNil(t, sess,
+		"removing state.vscdb must not delete already-synced sessions")
+}
+
+func TestReconcileWatchRootsCursorIDEDeletedMemberTombstonesSession(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{
+		{
+			id: "deleted-composer", name: "Deleted chat",
+			createdAt: 1782026756842, updatedAt: 1782026791522,
+			bubbles: []cursorIDESyncBubble{{
+				id: "b1", bubbleType: 1, text: "gone",
+				createdAt: "2026-06-21T07:27:29.606Z",
+			}},
+		},
+		{
+			id: "surviving-composer", name: "Surviving chat",
+			createdAt: 1782026756842, updatedAt: 1782026801522,
+			bubbles: []cursorIDESyncBubble{{
+				id: "b1", bubbleType: 1, text: "kept",
+				createdAt: "2026-06-21T07:27:29.606Z",
+			}},
+		},
+	})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 2, engine.SyncAll(t.Context(), nil).Synced)
+
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	for _, key := range []string{
+		"composerData:deleted-composer", "bubbleId:deleted-composer:b1",
+	} {
+		_, err = writer.Exec(`DELETE FROM cursorDiskKV WHERE key = ?`, key)
+		require.NoError(t, err)
+	}
+	require.NoError(t, writer.Close())
+
+	require.NoError(t, engine.ReconcileWatchRoots(
+		t.Context(), []string{root}, false,
+	))
+
+	archived, err := database.GetSessionFull(
+		t.Context(), "cursor-ide:deleted-composer",
+	)
+	require.NoError(t, err)
+	assertSourceMissingState(t, archived)
+	surviving, err := database.GetSessionFull(
+		t.Context(), "cursor-ide:surviving-composer",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, surviving)
+	assert.Nil(t, surviving.SourceMissingAt)
+}
+
+func TestSyncAllCursorIDEAddedBubbleWithUnchangedTimestampReparses(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	composer := cursorIDESyncComposer{
+		id: "edited-composer", name: "Edited chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{{
+			id: "b1", bubbleType: 1, text: "hello",
+			createdAt: "2026-06-21T07:27:29.606Z",
+		}},
+	}
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{composer})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	sess, err := database.GetSession(t.Context(), "cursor-ide:edited-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, 1, sess.MessageCount)
+
+	// A new turn whose write leaves lastUpdatedAt untouched: the composer
+	// document changes only in its header list.
+	composer.bubbles = append(composer.bubbles, cursorIDESyncBubble{
+		id: "b2", bubbleType: 2, text: "world",
+		createdAt: "2026-06-21T07:27:31.522Z",
+	})
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
+		cursorIDEComposerJSON(t, composer), "composerData:edited-composer",
+	)
+	require.NoError(t, err)
+	raw, err := json.Marshal(map[string]any{
+		"type": 2, "text": "world", "createdAt": "2026-06-21T07:27:31.522Z",
+	})
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)`,
+		"bubbleId:edited-composer:b2", raw,
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err = database.GetSession(t.Context(), "cursor-ide:edited-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Equal(t, 2, sess.MessageCount,
+		"an added turn must not be dropped as unchanged when lastUpdatedAt is stale")
+}
+
+func TestSyncAllCursorIDEBubbleContentEditWithUnchangedComposerDocReparses(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{{
+		id: "edited-composer", name: "Edited chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{{
+			id: "b1", bubbleType: 1, text: "hello",
+			createdAt: "2026-06-21T07:27:29.606Z",
+		}},
+	}})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	sess, err := database.GetSession(t.Context(), "cursor-ide:edited-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.NotNil(t, sess.FirstMessage)
+	require.Equal(t, "hello", *sess.FirstMessage)
+
+	// Rewrite the bubble in place without touching composerData at all:
+	// lastUpdatedAt and the header list stay identical, so only the stored
+	// bubble bytes reveal the edit.
+	raw, err := json.Marshal(map[string]any{
+		"type": 1, "text": "hello, but rewritten in place",
+		"createdAt": "2026-06-21T07:27:29.606Z",
+	})
+	require.NoError(t, err)
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
+		raw, "bubbleId:edited-composer:b1",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err = database.GetSession(t.Context(), "cursor-ide:edited-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.NotNil(t, sess.FirstMessage)
+	assert.Equal(t, "hello, but rewritten in place", *sess.FirstMessage,
+		"an in-place bubble rewrite must not be dropped as unchanged")
+}
+
+func TestSyncAllCursorIDEEmptiedContainerRetiresAllMembers(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{{
+		id: "only-composer", name: "Only chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{{
+			id: "b1", bubbleType: 1, text: "hello",
+			createdAt: "2026-06-21T07:27:29.606Z",
+		}},
+	}})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(`DELETE FROM cursorDiskKV`)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	archived, err := database.GetSessionFull(t.Context(), "cursor-ide:only-composer")
+	require.NoError(t, err)
+	assertSourceMissingState(t, archived)
+}
+
+func TestSyncAllCursorIDERenamedComposerWithUnchangedTimestampReparses(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	composer := cursorIDESyncComposer{
+		id: "renamed-composer", name: "Old name",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{{
+			id: "b1", bubbleType: 1, text: "hello",
+			createdAt: "2026-06-21T07:27:29.606Z",
+		}},
+	}
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{composer})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+
+	// Rename the chat without touching lastUpdatedAt or any bubble: only the
+	// composer document's name field changes.
+	composer.name = "New name"
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
+		cursorIDEComposerJSON(t, composer), "composerData:renamed-composer",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err := database.GetSession(t.Context(), "cursor-ide:renamed-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.NotNil(t, sess.DisplayName)
+	assert.Equal(t, "New name", *sess.DisplayName,
+		"a rename that leaves lastUpdatedAt untouched must not be dropped as unchanged")
+}
+
+func TestSyncAllCursorIDESameSizeSameMtimeRewriteReparses(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{{
+		id: "rewritten-composer", name: "Rewritten chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{{
+			id: "b1", bubbleType: 1, text: "hello",
+			createdAt: "2026-06-21T07:27:29.606Z",
+		}},
+	}})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	// A second unchanged pass lets the engine record the container's
+	// skip-cache entry, so the rewrite below must actually defeat the cached
+	// skip rather than just the unchanged-result filter.
+	engine.SyncAll(t.Context(), nil)
+	before, err := os.Stat(dbPath)
+	require.NoError(t, err)
+
+	// Rewrite the bubble to an equal-length value and restore the database
+	// file's mtime, so size, mtime, and the composer document are all
+	// byte-identical to the synced state. Only the SQLite change counter and
+	// the bubble's content differ.
+	raw, err := json.Marshal(map[string]any{
+		"type": 1, "text": "howdy", "createdAt": "2026-06-21T07:27:29.606Z",
+	})
+	require.NoError(t, err)
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
+		raw, "bubbleId:rewritten-composer:b1",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	after, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	require.Equal(t, before.Size(), after.Size(),
+		"fixture must reproduce a same-size rewrite")
+	require.NoError(t, os.Chtimes(dbPath, before.ModTime(), before.ModTime()))
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err := database.GetSession(
+		t.Context(), "cursor-ide:rewritten-composer",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.NotNil(t, sess.FirstMessage)
+	assert.Equal(t, "howdy", *sess.FirstMessage,
+		"a same-size, same-mtime rewrite must miss the skip cache and reparse")
+}
