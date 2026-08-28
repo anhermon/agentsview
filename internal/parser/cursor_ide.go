@@ -455,6 +455,10 @@ func parseCursorIDEComposer(
 		if !ok {
 			continue
 		}
+		// The bubble UUID is each message's stable identity; the engine's
+		// truncation guard compares it against the archived messages so a
+		// gap transcript can never drop archived content unnoticed.
+		msg.SourceUUID = header.BubbleID
 		messages = append(messages, msg)
 	}
 	if len(messages) == 0 {

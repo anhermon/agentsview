@@ -591,3 +591,65 @@ func TestSyncAllCursorIDEGappedComposerSurfacesAndKeepsGrowing(t *testing.T) {
 	assert.Equal(t, 2, sess.MessageCount,
 		"new turns in a gapped conversation must keep syncing")
 }
+
+func TestSyncAllCursorIDEEarlierBubbleWipeWithGrowthKeepsArchive(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	composer := cursorIDESyncComposer{
+		id: "masked-composer", name: "Masked wipe chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{
+			{id: "b1", bubbleType: 1, text: "first ask", createdAt: "2026-06-21T07:27:29.606Z"},
+			{id: "b2", bubbleType: 2, text: "first answer", createdAt: "2026-06-21T07:27:31.522Z"},
+		},
+	}
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{composer})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	sess, err := database.GetSession(t.Context(), "cursor-ide:masked-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, 2, sess.MessageCount)
+
+	// Wipe the first bubble while the conversation keeps growing: the new
+	// transcript has as many messages as the archive, but no longer contains
+	// the archived first turn. A message-count guard alone would admit it.
+	composer.bubbles = append(composer.bubbles,
+		cursorIDESyncBubble{id: "b3", bubbleType: 1, text: "second ask", createdAt: "2026-06-21T07:28:01.000Z"},
+		cursorIDESyncBubble{id: "b4", bubbleType: 2, text: "second answer", createdAt: "2026-06-21T07:28:05.000Z"},
+	)
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
+		cursorIDEComposerJSON(t, composer), "composerData:masked-composer",
+	)
+	require.NoError(t, err)
+	for _, b := range composer.bubbles[2:] {
+		raw, err := json.Marshal(map[string]any{
+			"type": b.bubbleType, "text": b.text, "createdAt": b.createdAt,
+		})
+		require.NoError(t, err)
+		_, err = writer.Exec(
+			`INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)`,
+			"bubbleId:masked-composer:"+b.id, raw,
+		)
+		require.NoError(t, err)
+	}
+	_, err = writer.Exec(
+		`DELETE FROM cursorDiskKV WHERE key = ?`, "bubbleId:masked-composer:b1",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err = database.GetSession(t.Context(), "cursor-ide:masked-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Equal(t, 2, sess.MessageCount,
+		"a wiped earlier bubble masked by new turns must not replace the archive")
+	require.NotNil(t, sess.FirstMessage)
+	assert.Equal(t, "first ask", *sess.FirstMessage,
+		"the archived first turn must survive the masked wipe")
+}

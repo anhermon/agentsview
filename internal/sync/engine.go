@@ -11345,7 +11345,7 @@ func (e *Engine) processProviderFile(
 		file, parsedResults, providerSemantics.UnchangedResults,
 	)
 	filteredResults = e.dropShrinkingTruncatedCursorIDEResults(
-		file, filteredResults,
+		ctx, file, filteredResults,
 	)
 	res := processResult{
 		results:              filteredResults,
@@ -11478,13 +11478,17 @@ func (e *Engine) dropUnchangedSharedSQLiteResults(
 // dropShrinkingTruncatedCursorIDEResults keeps a Cursor IDE composer whose
 // parse saw headers referencing missing bubble rows (a partial cursorDiskKV
 // wipe, flagged IsTruncated by the parser) from force-replacing an archived
-// session with fewer messages than it already has. First-time discovery and
-// a gapped conversation that keeps growing still write, so a wiped database
-// continues to surface its remaining content; only the shrinking overwrite
-// is refused, preserving the fuller archived transcript. The emitted result
-// still counts as present for ownership reconciliation, so the preserved
-// session stays active rather than being marked source-missing.
+// session that has messages the truncated transcript no longer carries.
+// Every message's source_uuid is its bubble UUID, so the guard admits a
+// truncated result only when it still contains every archived bubble: a
+// message count alone would admit a wipe of an earlier bubble masked by
+// newly added turns. First-time discovery and a gapped conversation that
+// keeps growing still write, so a wiped database continues to surface its
+// remaining content. The emitted result still counts as present for
+// ownership reconciliation, so a preserved session stays active rather than
+// being marked source-missing.
 func (e *Engine) dropShrinkingTruncatedCursorIDEResults(
+	ctx context.Context,
 	file parser.DiscoveredFile,
 	results []parser.ParseResult,
 ) []parser.ParseResult {
@@ -11499,8 +11503,26 @@ func (e *Engine) dropShrinkingTruncatedCursorIDEResults(
 			continue
 		}
 		id := applyIDPrefixToID(e.idPrefix, r.Session.ID)
-		stored, ok := e.db.GetSessionMessageCount(id)
-		if ok && r.Session.MessageCount < stored {
+		archived, err := e.db.ListMessageSourceUUIDs(ctx, id)
+		if err != nil {
+			// The archive cannot be verified; refusing the overwrite is the
+			// recoverable direction.
+			continue
+		}
+		incoming := make(map[string]struct{}, len(r.Messages))
+		for _, msg := range r.Messages {
+			if msg.SourceUUID != "" {
+				incoming[msg.SourceUUID] = struct{}{}
+			}
+		}
+		containsArchive := true
+		for _, uuid := range archived {
+			if _, ok := incoming[uuid]; !ok {
+				containsArchive = false
+				break
+			}
+		}
+		if !containsArchive {
 			continue
 		}
 		kept = append(kept, r)
