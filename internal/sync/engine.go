@@ -11344,9 +11344,8 @@ func (e *Engine) processProviderFile(
 	filteredResults := e.dropUnchangedSharedSQLiteResults(
 		file, parsedResults, providerSemantics.UnchangedResults,
 	)
-	filteredResults = e.dropShrinkingTruncatedCursorIDEResults(
-		ctx, file, filteredResults,
-	)
+	filteredResults, truncationVerifyFailed :=
+		e.dropShrinkingTruncatedCursorIDEResults(ctx, file, filteredResults)
 	res := processResult{
 		results:              filteredResults,
 		excludedSessionIDs:   excludedSessionIDs,
@@ -11355,7 +11354,7 @@ func (e *Engine) processProviderFile(
 		mtime:                fingerprint.MTimeNS,
 		cacheSkip:            cacheSkip,
 		cacheKey:             cacheKey,
-		noCacheSkip:          !cleanCache,
+		noCacheSkip:          !cleanCache || truncationVerifyFailed,
 		forceReplace:         outcome.ForceReplace || incForceReplace,
 		suppressPresenceSweep: outcome.SkipReason == parser.SkipUnsupportedSource ||
 			!outcome.ResultSetComplete,
@@ -11487,16 +11486,19 @@ func (e *Engine) dropUnchangedSharedSQLiteResults(
 // remaining content. The emitted result still counts as present for
 // ownership reconciliation, so a preserved session stays active rather than
 // being marked source-missing.
+// The returned verifyFailed reports that an archive read failed during
+// verification: the caller must not skip-cache the pass as clean, so the
+// dropped result is re-attempted instead of frozen behind a cached skip.
 func (e *Engine) dropShrinkingTruncatedCursorIDEResults(
 	ctx context.Context,
 	file parser.DiscoveredFile,
 	results []parser.ParseResult,
-) []parser.ParseResult {
+) (kept []parser.ParseResult, verifyFailed bool) {
 	if file.Agent != parser.AgentCursorIDE || len(results) == 0 ||
 		e.forceParseRequested(file) {
-		return results
+		return results, false
 	}
-	kept := results[:0]
+	kept = results[:0]
 	for _, r := range results {
 		if !r.Session.IsTruncated {
 			kept = append(kept, r)
@@ -11507,6 +11509,7 @@ func (e *Engine) dropShrinkingTruncatedCursorIDEResults(
 		if err != nil {
 			// The archive cannot be verified; refusing the overwrite is the
 			// recoverable direction.
+			verifyFailed = true
 			continue
 		}
 		incoming := make(map[string]struct{}, len(r.Messages))
@@ -11527,7 +11530,7 @@ func (e *Engine) dropShrinkingTruncatedCursorIDEResults(
 		}
 		kept = append(kept, r)
 	}
-	return kept
+	return kept, verifyFailed
 }
 
 func (e *Engine) providerSourceSessionIDsForForceReplace(
@@ -18619,6 +18622,13 @@ func providerSourceMtimeNeedsFingerprint(agent parser.AgentType) bool {
 	switch agent {
 	case parser.AgentQoder:
 		// Qoder stores a sidecar whose mtime the plain path stat misses.
+		return true
+	case parser.AgentCursorIDE:
+		// A "state.vscdb#<composer>" virtual path cannot be stat'ed. The
+		// path-shape check already routes it through the member fingerprint
+		// because Windsurf's database shares the state.vscdb name; this
+		// entry makes cursor-ide's session-watcher token independent of
+		// that coincidence.
 		return true
 	default:
 		// RooCode is deliberately absent: its fingerprint content-hashes

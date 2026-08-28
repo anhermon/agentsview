@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
@@ -652,4 +653,27 @@ func TestSyncAllCursorIDEEarlierBubbleWipeWithGrowthKeepsArchive(t *testing.T) {
 	require.NotNil(t, sess.FirstMessage)
 	assert.Equal(t, "first ask", *sess.FirstMessage,
 		"the archived first turn must survive the masked wipe")
+}
+
+func TestSourceMtimeCursorIDEResolvesVirtualMemberPath(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{{
+		id: "watched-composer", name: "Watched chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{{
+			id: "b1", bubbleType: 1, text: "hello",
+			createdAt: "2026-06-21T07:27:29.606Z",
+		}},
+	}})
+	engine, _ := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+
+	// The session watcher polls SourceMtime; a "state.vscdb#<composer>"
+	// virtual path cannot be stat'ed, so it must resolve through the member
+	// fingerprint instead of returning zero and disabling change detection.
+	mtime := engine.SourceMtime("cursor-ide:watched-composer")
+	assert.Equal(t,
+		time.UnixMilli(1782026791522).UTC().UnixNano(), mtime,
+		"the watcher token must be the composer's lastUpdatedAt-derived mtime")
 }
