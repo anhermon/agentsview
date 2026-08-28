@@ -3,8 +3,10 @@ package sync_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json/v2"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/dbtest"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/sync"
 )
@@ -174,6 +177,72 @@ func TestSyncEngineAntigravityCLI_StaleDataVersionRenormalizesProject(t *testing
 	assertSessionProject(t, env.db, sessionID, "my_cli_project")
 	assert.Equal(t, db.CurrentDataVersion(), env.db.GetSessionDataVersion(sessionID),
 		"reparse must restamp the session at the current data version")
+}
+
+// TestSyncEngineAntigravityCLI_DisabledProjectDiscoveryHonoredBySyncAll pins
+// the DisableFilesystemProjectDiscovery contract on the full-sync path:
+// every sync entry point, not just SyncPaths, must put the policy on the
+// context that reaches provider parsing. The fixture workspace is a real git
+// worktree whose repository name differs from the worktree's directory
+// basename, so a full sync that probes the filesystem stores the repository
+// name instead of the lexical basename and fails this test.
+func TestSyncEngineAntigravityCLI_DisabledProjectDiscoveryHonoredBySyncAll(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available in PATH")
+	}
+	gitRun := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	gitRoot := t.TempDir()
+	mainRepo := filepath.Join(gitRoot, "grouping-repo")
+	require.NoError(t, os.MkdirAll(mainRepo, 0o755))
+	gitRun(mainRepo, "init", "-q", "-b", "main")
+	gitRun(mainRepo,
+		"-c", "user.email=test@example.com",
+		"-c", "user.name=Test User",
+		"-c", "commit.gpgsign=false",
+		"commit", "--allow-empty", "-q", "-m", "seed",
+	)
+	worktree := filepath.Join(gitRoot, "feature-checkout")
+	gitRun(mainRepo, "worktree", "add", "-q", "-b", "feature", worktree)
+
+	cliDir := t.TempDir()
+	convDir := filepath.Join(cliDir, "conversations")
+	require.NoError(t, os.MkdirAll(convDir, 0o755))
+	uuid := "bbbbbbbb-2222-4333-8444-cccccccccccc"
+	historyLine, err := json.Marshal(map[string]string{
+		"conversationId": uuid,
+		"workspace":      worktree,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "history.jsonl"),
+		append(historyLine, '\n'), 0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(convDir, uuid+".pb"), []byte("pb-stub"), 0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(convDir, uuid+".trajectory.json"),
+		[]byte(antigravityCLISingleUserTrajectory(uuid, "hello")), 0o644,
+	))
+
+	database := dbtest.OpenTestDB(t)
+	engine := sync.NewEngine(database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentAntigravityCLI: {cliDir},
+		},
+		Machine:                           "local",
+		DisableFilesystemProjectDiscovery: true,
+	})
+	defer engine.Close()
+
+	require.Equal(t, 1, engine.SyncAll(context.Background(), nil).Synced)
+	assertSessionProject(t, database, "antigravity-cli:"+uuid, "feature_checkout")
 }
 
 func TestSyncEngineAntigravityCLI_ParentLinkArrivalOrder(t *testing.T) {
