@@ -60,6 +60,31 @@ func openCursorIDEDB(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+// cursorIDEQuerier is the shared read surface of *sql.DB and *sql.Tx: the
+// composer readers accept it so one snapshot transaction can serve the
+// composer document, its bubbles, and the content digest together.
+type cursorIDEQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// beginCursorIDESnapshot opens one deferred read transaction on the
+// read-only connection. Cursor keeps writing to state.vscdb while agentsview
+// reads it; without a transaction every query sees its own implicit
+// snapshot, so the digest could hash newer bubble bytes than the messages
+// just parsed, and the freshness gates would then trust a digest that does
+// not describe the stored transcript.
+func beginCursorIDESnapshot(
+	ctx context.Context, conn *sql.DB, composerID string,
+) (*sql.Tx, error) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"beginning cursor IDE snapshot for %s: %w", composerID, err)
+	}
+	return tx, nil
+}
+
 // CursorIDEComposerExists reports whether a composerData row with the given
 // composer ID exists in state.vscdb.
 func CursorIDEComposerExists(dbPath, composerID string) bool {
@@ -135,11 +160,11 @@ type cursorIDEComposerMeta struct {
 // cursorDiskKV key index and only ever reads the one composer's rows, never
 // the whole multi-hundred-MB database.
 func cursorIDEComposerDigest(
-	ctx context.Context, conn *sql.DB, composerID string, rawComposer []byte,
+	ctx context.Context, q cursorIDEQuerier, composerID string, rawComposer []byte,
 ) (string, error) {
 	h := fnv.New64a()
 	_, _ = h.Write(rawComposer)
-	rows, err := conn.QueryContext(ctx,
+	rows, err := q.QueryContext(ctx,
 		`SELECT key, value FROM cursorDiskKV WHERE key >= ? AND key < ? ORDER BY key`,
 		cursorIDEBubbleKeyPrefix+composerID+":",
 		cursorIDEBubbleKeyPrefix+composerID+";",
@@ -171,8 +196,13 @@ func cursorIDEComposerDigest(
 func loadCursorIDEComposerMeta(
 	ctx context.Context, conn *sql.DB, composerID string,
 ) (cursorIDEComposerMeta, bool, error) {
+	tx, err := beginCursorIDESnapshot(ctx, conn, composerID)
+	if err != nil {
+		return cursorIDEComposerMeta{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
 	var raw []byte
-	err := conn.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT value FROM cursorDiskKV WHERE key = ?`,
 		cursorIDEComposerKeyPrefix+composerID,
 	).Scan(&raw)
@@ -192,7 +222,7 @@ func loadCursorIDEComposerMeta(
 		return cursorIDEComposerMeta{}, false, fmt.Errorf(
 			"decoding cursor IDE composer %s: %w", composerID, err)
 	}
-	digest, err := cursorIDEComposerDigest(ctx, conn, composerID, raw)
+	digest, err := cursorIDEComposerDigest(ctx, tx, composerID, raw)
 	if err != nil {
 		return cursorIDEComposerMeta{}, false, err
 	}
@@ -245,10 +275,10 @@ type cursorIDEBubble struct {
 }
 
 func loadCursorIDEBubble(
-	ctx context.Context, conn *sql.DB, composerID, bubbleID string,
+	ctx context.Context, q cursorIDEQuerier, composerID, bubbleID string,
 ) (*cursorIDEBubble, error) {
 	var raw []byte
-	err := conn.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT value FROM cursorDiskKV WHERE key = ?`,
 		cursorIDEBubbleKeyPrefix+composerID+":"+bubbleID,
 	).Scan(&raw)
@@ -368,8 +398,13 @@ func parseCursorIDEComposer(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	tx, err := beginCursorIDESnapshot(ctx, conn, composerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
 	var raw []byte
-	err := conn.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT value FROM cursorDiskKV WHERE key = ?`,
 		cursorIDEComposerKeyPrefix+composerID,
 	).Scan(&raw)
@@ -396,7 +431,7 @@ func parseCursorIDEComposer(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		bubble, err := loadCursorIDEBubble(ctx, conn, composerID, header.BubbleID)
+		bubble, err := loadCursorIDEBubble(ctx, tx, composerID, header.BubbleID)
 		if err != nil {
 			return nil, err
 		}
@@ -450,7 +485,7 @@ func parseCursorIDEComposer(
 		endedAt = startedAt
 	}
 
-	digest, err := cursorIDEComposerDigest(ctx, conn, composerID, raw)
+	digest, err := cursorIDEComposerDigest(ctx, tx, composerID, raw)
 	if err != nil {
 		return nil, err
 	}

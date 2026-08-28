@@ -451,3 +451,42 @@ func TestSyncAllCursorIDESameSizeSameMtimeRewriteReparses(t *testing.T) {
 	assert.Equal(t, "howdy", *sess.FirstMessage,
 		"a same-size, same-mtime rewrite must miss the skip cache and reparse")
 }
+
+func TestSyncAllCursorIDEWipedBubblesMarkSourceMissingAndPreserveTranscript(
+	t *testing.T,
+) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{{
+		id: "wiped-composer", name: "Wiped chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{{
+			id: "b1", bubbleType: 1, text: "hello",
+			createdAt: "2026-06-21T07:27:29.606Z",
+		}},
+	}})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	before, err := database.GetSessionFull(t.Context(), "cursor-ide:wiped-composer")
+	require.NoError(t, err)
+	require.NotNil(t, before)
+
+	// A Cursor update wiping bubble rows while the composer document and its
+	// headers survive: the transcript's source material is locally gone, but
+	// the archived session must stay browsable and intact.
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`DELETE FROM cursorDiskKV WHERE key = ?`, "bubbleId:wiped-composer:b1",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	archived, err := database.GetSessionFull(t.Context(), "cursor-ide:wiped-composer")
+	require.NoError(t, err)
+	assertSourceMissingState(t, archived)
+	assert.Equal(t, before.MessageCount, archived.MessageCount,
+		"wiped bubble rows must not truncate the archived transcript")
+}
