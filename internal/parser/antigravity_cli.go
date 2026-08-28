@@ -252,10 +252,20 @@ func (p *antigravityCLIProvider) parseSessionWithStatus(
 	// project is the raw workspace filesystem path recorded by history.jsonl.
 	// Run it through the shared cwd normalizer so sessions from different
 	// git worktrees of the same repo resolve to one project, matching how
-	// the Codex and Claude providers normalize their own cwd hints.
+	// the Codex and Claude providers normalize their own cwd hints. A
+	// path-rewritten parse (remote sync) describes another machine's
+	// filesystem, so it keeps the lexical rules but skips local git-root
+	// discovery: the remote workspace path could name an unrelated
+	// repository that happens to exist on the importing host.
 	if project != "" {
-		if p := ExtractProjectFromCwdWithBranchContext(ctx, project, ""); p != "" {
-			project = p
+		projectCtx := ctx
+		if p.Config.PathRewriter != nil {
+			projectCtx = WithoutFilesystemProjectDiscovery(projectCtx)
+		}
+		if normalized := ExtractProjectFromCwdWithBranchContext(
+			projectCtx, project, "",
+		); normalized != "" {
+			project = normalized
 		}
 	}
 
