@@ -11373,8 +11373,11 @@ func (e *Engine) processProviderFile(
 		fingerprint.Hash != "" {
 		// A whole-container parse may only be skip-cached after its member
 		// writes commit (cache-after-write); virtual member parses keep the
-		// immediate cache path.
-		res.cacheAfterWrite = providerPersistentSharedContainerSource(source)
+		// immediate cache path. A truncation-verification failure must not
+		// be promoted either: caching that pass as clean would freeze the
+		// refused result behind a cached skip instead of retrying it.
+		res.cacheAfterWrite = providerPersistentSharedContainerSource(source) &&
+			!truncationVerifyFailed
 	}
 	// Incremental-append providers (Claude and Codex) need the stored file
 	// identity so a later sync can detect an atomic file replacement
