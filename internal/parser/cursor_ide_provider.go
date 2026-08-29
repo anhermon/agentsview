@@ -172,6 +172,14 @@ func cursorIDESQLiteStateHash(dbPath string) (string, error) {
 		return "", fmt.Errorf("reading cursor IDE db header %s: %w", dbPath, err)
 	}
 	defer f.Close()
+	if info, err := f.Stat(); err == nil {
+		// Fold the file identity in so an atomic replacement of state.vscdb
+		// with a different database (a restore or profile switch renamed
+		// into place) always changes the cache identity, even when size,
+		// mtime, and the headers happen to coincide.
+		inode, device := sourceFileIdentity(info)
+		_, _ = fmt.Fprintf(h, "%d|%d|", inode, device)
+	}
 	header := make([]byte, 100)
 	n, err := io.ReadFull(f, header)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {

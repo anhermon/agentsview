@@ -749,3 +749,85 @@ func TestResyncAllCursorIDEKeepsArchivedTranscriptOverGapResult(t *testing.T) {
 	assert.Equal(t, 2, sess.MessageCount,
 		"a full resync must not replace the archive with a gap transcript")
 }
+
+func TestSyncAllCursorIDEEmptiedBubbleKeepsArchivedTranscript(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{{
+		id: "emptied-composer", name: "Emptied chat",
+		createdAt: 1782026756842, updatedAt: 1782026791522,
+		bubbles: []cursorIDESyncBubble{
+			{id: "b1", bubbleType: 1, text: "ask", createdAt: "2026-06-21T07:27:29.606Z"},
+			{id: "b2", bubbleType: 2, text: "answer", createdAt: "2026-06-21T07:27:31.522Z"},
+		},
+	}})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	sess, err := database.GetSession(t.Context(), "cursor-ide:emptied-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, 2, sess.MessageCount)
+
+	// The bubble row survives but its content is wiped in place: the header
+	// still references it, so the transcript is incomplete, not edited.
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
+		[]byte(`{}`), "bubbleId:emptied-composer:b2",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err = database.GetSession(t.Context(), "cursor-ide:emptied-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Equal(t, 2, sess.MessageCount,
+		"a bubble emptied in place must not erase the archived turn")
+}
+
+func TestSyncAllCursorIDEReplacedDatabaseFileReparses(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	composer := func(text string) cursorIDESyncComposer {
+		return cursorIDESyncComposer{
+			id: "replaced-composer", name: "Replaced chat",
+			createdAt: 1782026756842, updatedAt: 1782026791522,
+			bubbles: []cursorIDESyncBubble{{
+				id: "b1", bubbleType: 1, text: text,
+				createdAt: "2026-06-21T07:27:29.606Z",
+			}},
+		}
+	}
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{composer("hello")})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
+	// A second unchanged pass records the container's skip-cache entry.
+	engine.SyncAll(t.Context(), nil)
+	before, err := os.Stat(dbPath)
+	require.NoError(t, err)
+
+	// Rename a different database over state.vscdb, built by an identical
+	// statement sequence so its size and 100-byte header match, and restore
+	// the mtime -- the shape of a backup restore or profile switch. Only the
+	// file identity distinguishes it.
+	otherPath := filepath.Join(t.TempDir(), "state.vscdb")
+	createCursorIDEStateDB(t, otherPath, []cursorIDESyncComposer{composer("howdy")})
+	require.NoError(t, os.Rename(otherPath, dbPath))
+	after, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	require.Equal(t, before.Size(), after.Size(),
+		"fixture must reproduce a same-size replacement")
+	require.NoError(t, os.Chtimes(dbPath, before.ModTime(), before.ModTime()))
+
+	engine.SyncAll(t.Context(), nil)
+
+	sess, err := database.GetSession(t.Context(), "cursor-ide:replaced-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.NotNil(t, sess.FirstMessage)
+	assert.Equal(t, "howdy", *sess.FirstMessage,
+		"a replaced database file must miss the skip cache and reparse")
+}

@@ -453,6 +453,17 @@ func parseCursorIDEComposer(
 		}
 		msg, ok := cursorIDEMessageFromBubble(len(messages), *bubble)
 		if !ok {
+			if bubble.Type == cursorIDEBubbleTypeUser ||
+				bubble.Type == cursorIDEBubbleTypeAssistant {
+				// A conversational bubble that exists but renders nothing is
+				// indistinguishable from a row emptied in place (e.g. "{}"),
+				// so it takes the same truncation flag as a missing row and
+				// the engine verifies against the archive before the
+				// transcript can lose an archived turn. In-flight generation
+				// placeholders flag transiently and clear on the next parse;
+				// non-conversational bookkeeping bubble types stay unflagged.
+				truncated = true
+			}
 			continue
 		}
 		// The bubble UUID is each message's stable identity; the engine's
