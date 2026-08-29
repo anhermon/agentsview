@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
@@ -669,11 +668,84 @@ func TestSourceMtimeCursorIDEResolvesVirtualMemberPath(t *testing.T) {
 	engine, _ := newCursorIDESyncEngine(t, root)
 	require.Equal(t, 1, engine.SyncAll(t.Context(), nil).Synced)
 
-	// The session watcher polls SourceMtime; a "state.vscdb#<composer>"
-	// virtual path cannot be stat'ed, so it must resolve through the member
-	// fingerprint instead of returning zero and disabling change detection.
-	mtime := engine.SourceMtime("cursor-ide:watched-composer")
-	assert.Equal(t,
-		time.UnixMilli(1782026791522).UTC().UnixNano(), mtime,
-		"the watcher token must be the composer's lastUpdatedAt-derived mtime")
+	// The session watcher polls SourceMtime as an equality-only change
+	// token; a "state.vscdb#<composer>" virtual path cannot be stat'ed, so
+	// it must resolve through the member fingerprint instead of returning
+	// zero and disabling change detection.
+	token := engine.SourceMtime("cursor-ide:watched-composer")
+	require.NotZero(t, token,
+		"the watcher token must resolve through the member fingerprint")
+
+	// An in-place bubble rewrite leaves lastUpdatedAt untouched; the token
+	// must still move so the polling fallback sees the edit.
+	raw, err := json.Marshal(map[string]any{
+		"type": 1, "text": "hello, edited in place",
+		"createdAt": "2026-06-21T07:27:29.606Z",
+	})
+	require.NoError(t, err)
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`UPDATE cursorDiskKV SET value = ? WHERE key = ?`,
+		raw, "bubbleId:watched-composer:b1",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	edited := engine.SourceMtime("cursor-ide:watched-composer")
+	require.NotZero(t, edited)
+	assert.NotEqual(t, token, edited,
+		"an edit that leaves lastUpdatedAt untouched must still move the token")
+}
+
+func TestResyncAllCursorIDEKeepsArchivedTranscriptOverGapResult(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "state.vscdb")
+	createCursorIDEStateDB(t, dbPath, []cursorIDESyncComposer{
+		{
+			id: "resync-composer", name: "Resynced chat",
+			createdAt: 1782026756842, updatedAt: 1782026791522,
+			bubbles: []cursorIDESyncBubble{
+				{id: "b1", bubbleType: 1, text: "ask", createdAt: "2026-06-21T07:27:29.606Z"},
+				{id: "b2", bubbleType: 2, text: "answer", createdAt: "2026-06-21T07:27:31.522Z"},
+			},
+		},
+		{
+			id: "healthy-composer", name: "Healthy chat",
+			createdAt: 1782026756842, updatedAt: 1782026801522,
+			bubbles: []cursorIDESyncBubble{{
+				id: "b1", bubbleType: 1, text: "fine",
+				createdAt: "2026-06-21T07:27:29.606Z",
+			}},
+		},
+	})
+	engine, database := newCursorIDESyncEngine(t, root)
+	require.Equal(t, 2, engine.SyncAll(t.Context(), nil).Synced)
+	sess, err := database.GetSession(t.Context(), "cursor-ide:resync-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, 2, sess.MessageCount)
+
+	// Wipe one bubble, then rebuild the archive. During the rebuild e.db is
+	// the fresh database, so the truncation guard must verify against the
+	// original archive (archiveStore); admitting the gap transcript there
+	// would put the session into the rebuild and the orphan copy would
+	// never rescue the fuller original.
+	writer, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = writer.Exec(
+		`DELETE FROM cursorDiskKV WHERE key = ?`, "bubbleId:resync-composer:b2",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	stats := engine.ResyncAll(t.Context(), nil)
+	require.False(t, stats.Aborted, "resync aborted: %+v", stats)
+
+	sess, err = database.GetSession(t.Context(), "cursor-ide:resync-composer")
+	require.NoError(t, err)
+	require.NotNil(t, sess,
+		"the archived session must survive the rebuild")
+	assert.Equal(t, 2, sess.MessageCount,
+		"a full resync must not replace the archive with a gap transcript")
 }

@@ -11498,6 +11498,32 @@ func (e *Engine) dropShrinkingTruncatedCursorIDEResults(
 		e.forceParseRequested(file) {
 		return results, false
 	}
+	type messageSourceUUIDReader interface {
+		ListMessageSourceUUIDs(context.Context, string) ([]string, error)
+	}
+	reader := messageSourceUUIDReader(e.db)
+	if e.archiveStore != nil {
+		// A rebuild writes into a fresh database while the original archive
+		// remains readable as archiveStore. Verifying against the empty
+		// rebuild target would admit every truncated transcript, and once
+		// written there the orphan copy would never rescue the fuller
+		// original. A refused write instead leaves the session out of the
+		// rebuild, and the orphan copy carries the archived full transcript
+		// across.
+		archived, ok := e.archiveStore.(messageSourceUUIDReader)
+		if !ok {
+			kept = results[:0]
+			for _, r := range results {
+				if r.Session.IsTruncated {
+					verifyFailed = true
+					continue
+				}
+				kept = append(kept, r)
+			}
+			return kept, verifyFailed
+		}
+		reader = archived
+	}
 	kept = results[:0]
 	for _, r := range results {
 		if !r.Session.IsTruncated {
@@ -11505,7 +11531,7 @@ func (e *Engine) dropShrinkingTruncatedCursorIDEResults(
 			continue
 		}
 		id := applyIDPrefixToID(e.idPrefix, r.Session.ID)
-		archived, err := e.db.ListMessageSourceUUIDs(ctx, id)
+		archived, err := reader.ListMessageSourceUUIDs(ctx, id)
 		if err != nil {
 			// The archive cannot be verified; refusing the overwrite is the
 			// recoverable direction.
@@ -18604,6 +18630,14 @@ func (e *Engine) providerSessionSourceMtime(
 		if err != nil || !providerOutcomeContainsSession(outcome, sessionID) {
 			return 0
 		}
+	}
+	if def.Type == parser.AgentCursorIDE && fingerprint.Hash != "" {
+		// SourceMtime is an equality-only change token (see the Codebuff
+		// branch): folding the member content digest in lets the watcher's
+		// polling fallback see an edit that leaves lastUpdatedAt untouched.
+		h := fnv.New64a()
+		_, _ = fmt.Fprintf(h, "%d|%s", fingerprint.MTimeNS, fingerprint.Hash)
+		return int64(h.Sum64())
 	}
 	return fingerprint.MTimeNS
 }
