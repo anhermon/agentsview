@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -789,6 +790,9 @@ func TestSyncAllCursorIDEEmptiedBubbleKeepsArchivedTranscript(t *testing.T) {
 }
 
 func TestSyncAllCursorIDEReplacedDatabaseFileReparses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the replacement is detectable only by inode/device identity, which sourceFileIdentity does not provide on Windows")
+	}
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "state.vscdb")
 	composer := func(text string) cursorIDESyncComposer {
