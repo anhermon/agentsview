@@ -2,18 +2,13 @@
 
 This fork includes Grok Bot / Sand desktop agent support and related fixes.
 
-## Known Behavior: Sync Count Display
+## Fixed: Sync Count Display
 
-When sync completes, the reported "synced" count may differ from the footer session count:
+**Status**: Fixed in this PR.
 
-- **Sync completion**: Reports total sessions written, including fork sessions
-- **Footer count**: Shows only root sessions (excludes forks and subagents)
+Previously, sync completion reported "15 sessions synced" but the footer showed only "1 session, 153 messages" because the footer stats excluded subagents and forks. Now the footer includes all synced sessions to match the sync report.
 
-**Example**: Sync reports "15 sessions synced" but footer increases by 12. This happens when 3 fork sessions were included in the sync.
-
-**Why**: Fork sessions are internal relationships (branches within a single session file) that users don't interact with directly. The footer shows the user-visible count.
-
-**Verification**: Check the session list - you'll see the root sessions, not the forks.
+**Verification**: After sync completes, the footer session count will match the "sessions synced" count (including subagents/forks). Use `session list --include-children` to see the full tree.
 
 ## Daemon Restart
 

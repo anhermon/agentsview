@@ -179,6 +179,12 @@ func TestParseGrokBotSessionAutomationMarkers(t *testing.T) {
 		"should strip SAND_HIDDEN_PROMPT from message body")
 	assert.Contains(t, result.Messages[2].Content, "Check the results",
 		"should preserve actual content in third message body")
+
+	// Verify Content field has markers stripped (this is what gets stored in DB)
+	assert.Equal(t, "Run automated tests", result.Messages[0].Content,
+		"message Content should be fully clean without markers")
+	assert.Equal(t, "Check the results", result.Messages[2].Content,
+		"message Content should be fully clean without markers")
 }
 
 func TestParseGrokBotSessionSubagentParent(t *testing.T) {
