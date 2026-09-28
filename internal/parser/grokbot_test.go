@@ -156,6 +156,7 @@ func TestParseGrokBotSessionAutomationMarkers(t *testing.T) {
 	jsonlPath := filepath.Join(sessionDir, sessionID+".jsonl")
 	fixture := `{"role":"user","message":{"content":[{"type":"text","text":"[SAND_TRUSTED_AUTOMATION_PROMPT] Run automated tests"}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"Running tests now."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT] Check the results"}]}}
 `
 	require.NoError(t, os.WriteFile(jsonlPath, []byte(fixture), 0644))
 
@@ -168,6 +169,22 @@ func TestParseGrokBotSessionAutomationMarkers(t *testing.T) {
 		"should strip automation marker from first message")
 	assert.Contains(t, result.Session.FirstMessage, "Run automated tests",
 		"should preserve actual prompt text")
+
+	require.Len(t, result.Messages, 3)
+	assert.NotContains(t, result.Messages[0].Content, "[SAND_TRUSTED_AUTOMATION_PROMPT]",
+		"should strip SAND_TRUSTED_AUTOMATION_PROMPT from message body")
+	assert.Contains(t, result.Messages[0].Content, "Run automated tests",
+		"should preserve actual content in first message body")
+	assert.NotContains(t, result.Messages[2].Content, "[SAND_HIDDEN_PROMPT]",
+		"should strip SAND_HIDDEN_PROMPT from message body")
+	assert.Contains(t, result.Messages[2].Content, "Check the results",
+		"should preserve actual content in third message body")
+
+	// Verify Content field has markers stripped (this is what gets stored in DB)
+	assert.Equal(t, "Run automated tests", result.Messages[0].Content,
+		"message Content should be fully clean without markers")
+	assert.Equal(t, "Check the results", result.Messages[2].Content,
+		"message Content should be fully clean without markers")
 }
 
 func TestParseGrokBotSessionSubagentParent(t *testing.T) {

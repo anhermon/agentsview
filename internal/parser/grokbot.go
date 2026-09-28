@@ -45,7 +45,7 @@ func ParseGrokBotSession(
 		return ParseResult{}, fmt.Errorf("invalid grokbot session id for %s", path)
 	}
 
-	messages, err := parseGrokBotJSONL(path)
+	messages, hasAutomation, err := parseGrokBotJSONL(path)
 	if err != nil {
 		return ParseResult{}, err
 	}
@@ -56,18 +56,13 @@ func ParseGrokBotSession(
 
 	firstPrompt := ""
 	userMessageCount := 0
-	isAutomated := false
 	for _, msg := range messages {
 		if msg.Role == RoleUser && strings.TrimSpace(msg.Content) != "" {
 			userMessageCount++
 			if firstPrompt == "" {
-				cleaned := grokbotStripAutomationMarkers(msg.Content)
-				if cleaned != msg.Content {
-					isAutomated = true
-				}
-				if strings.TrimSpace(cleaned) != "" {
+				if strings.TrimSpace(msg.Content) != "" {
 					firstPrompt = truncate(
-						strings.ReplaceAll(cleaned, "\n", " "), 300,
+						strings.ReplaceAll(msg.Content, "\n", " "), 300,
 					)
 				}
 			}
@@ -96,7 +91,7 @@ func ParseGrokBotSession(
 	}
 
 	sessionKind := ""
-	if isAutomated {
+	if hasAutomation {
 		sessionKind = SessionKindNonInteractive
 	}
 
@@ -131,6 +126,11 @@ func grokbotStripAutomationMarkers(text string) string {
 	return strings.TrimSpace(cleaned)
 }
 
+func grokbotHasAutomationMarkers(text string) bool {
+	return strings.Contains(text, "[SAND_HIDDEN_PROMPT]") ||
+		strings.Contains(text, "[SAND_TRUSTED_AUTOMATION_PROMPT]")
+}
+
 func grokbotDetectParent(sessionPath, childID string) (string, RelationshipType) {
 	if !strings.HasPrefix(childID, "sand-subagent-") {
 		return "", RelNone
@@ -160,10 +160,10 @@ func grokbotDetectParent(sessionPath, childID string) (string, RelationshipType)
 	return "", RelNone
 }
 
-func parseGrokBotJSONL(path string) ([]ParsedMessage, error) {
+func parseGrokBotJSONL(path string) ([]ParsedMessage, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, false, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -171,6 +171,7 @@ func parseGrokBotJSONL(path string) ([]ParsedMessage, error) {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	ordinal := 0
+	hasAutomation := false
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -183,24 +184,27 @@ func parseGrokBotJSONL(path string) ([]ParsedMessage, error) {
 			continue
 		}
 
-		parsed := grokbotMessageFromLine(msg, ordinal)
+		parsed, msgHasAutomation := grokbotMessageFromLine(msg, ordinal)
 		if parsed != nil {
 			messages = append(messages, *parsed)
+			if msgHasAutomation {
+				hasAutomation = true
+			}
 			ordinal++
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan %s: %w", path, err)
+		return nil, false, fmt.Errorf("scan %s: %w", path, err)
 	}
 
-	return messages, nil
+	return messages, hasAutomation, nil
 }
 
-func grokbotMessageFromLine(msg grokbotMessage, ordinal int) *ParsedMessage {
+func grokbotMessageFromLine(msg grokbotMessage, ordinal int) (*ParsedMessage, bool) {
 	role := strings.ToLower(strings.TrimSpace(msg.Role))
 	if role == "" {
-		return nil
+		return nil, false
 	}
 
 	parsed := ParsedMessage{
@@ -215,18 +219,25 @@ func grokbotMessageFromLine(msg grokbotMessage, ordinal int) *ParsedMessage {
 	case "tool":
 		parsed.Role = RoleUser
 	default:
-		return nil
+		return nil, false
 	}
 
 	var textParts []string
 	var toolCalls []ParsedToolCall
 	var toolResults []ParsedToolResult
+	hasAutomationMarkers := false
 
 	for _, block := range msg.Message.Content {
 		switch block.Type {
 		case "text":
 			if text := strings.TrimSpace(block.Text); text != "" {
-				textParts = append(textParts, text)
+				if !hasAutomationMarkers && grokbotHasAutomationMarkers(text) {
+					hasAutomationMarkers = true
+				}
+				cleaned := grokbotStripAutomationMarkers(text)
+				if cleaned != "" {
+					textParts = append(textParts, cleaned)
+				}
 			}
 		case "tool_use":
 			inputJSON := "{}"
@@ -271,8 +282,8 @@ func grokbotMessageFromLine(msg grokbotMessage, ordinal int) *ParsedMessage {
 	}
 
 	if parsed.ContentLength == 0 && len(toolCalls) == 0 && len(toolResults) == 0 {
-		return nil
+		return nil, false
 	}
 
-	return &parsed
+	return &parsed, hasAutomationMarkers
 }

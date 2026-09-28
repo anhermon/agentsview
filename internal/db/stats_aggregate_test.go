@@ -41,25 +41,26 @@ func TestStatsAllTotalsUseSameFilter(t *testing.T) {
 		oneShot, automated bool
 		want               Stats
 	}{
+		// GetStats now includes subagents and forks to match sync totals
 		{"all", false, false, Stats{
-			SessionCount: 4, MessageCount: 23,
-			ProjectCount: 2, MachineCount: 3,
-			EarliestSession: new("2026-01-01T00:00:00Z"),
+			SessionCount: 6, MessageCount: 223,
+			ProjectCount: 3, MachineCount: 4,
+			EarliestSession: new("2025-01-01T00:00:00Z"),
 		}},
 		{"exclude one-shot", true, false, Stats{
-			SessionCount: 3, MessageCount: 20,
-			ProjectCount: 2, MachineCount: 3,
-			EarliestSession: new("2026-01-01T00:00:00Z"),
+			SessionCount: 5, MessageCount: 220,
+			ProjectCount: 3, MachineCount: 4,
+			EarliestSession: new("2025-01-01T00:00:00Z"),
 		}},
 		{"exclude automated", false, true, Stats{
-			SessionCount: 2, MessageCount: 13,
-			ProjectCount: 1, MachineCount: 2,
-			EarliestSession: new("2026-01-03T00:00:00Z"),
+			SessionCount: 4, MessageCount: 213,
+			ProjectCount: 2, MachineCount: 3,
+			EarliestSession: new("2025-01-01T00:00:00Z"),
 		}},
 		{"exclude both", true, true, Stats{
-			SessionCount: 1, MessageCount: 10,
-			ProjectCount: 1, MachineCount: 1,
-			EarliestSession: new("2026-01-04T00:00:00Z"),
+			SessionCount: 3, MessageCount: 210,
+			ProjectCount: 2, MachineCount: 2,
+			EarliestSession: new("2025-01-01T00:00:00Z"),
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
