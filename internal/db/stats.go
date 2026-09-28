@@ -18,9 +18,17 @@ type Stats struct {
 }
 
 // rootSessionFilter is the WHERE clause shared by session list
-// and stats to exclude sub-agent, fork, and trashed sessions.
+// to exclude sub-agent, fork, and trashed sessions when browsing.
+// GetStats uses a relaxed version that includes subagents/forks
+// so footer counts match sync totals.
 const rootSessionFilter = `message_count > 0
 	AND relationship_type NOT IN ('subagent', 'fork')
+	AND deleted_at IS NULL`
+
+// statsFilter is the base WHERE clause for GetStats.
+// It includes subagents and forks (unlike rootSessionFilter) so
+// footer session counts match what sync reports as written.
+const statsFilter = `message_count > 0
 	AND deleted_at IS NULL`
 
 func nonSourceBackedAgentPlaceholders() string {
@@ -189,13 +197,13 @@ func (db *DB) fileBackedSessionCount(
 	return count, nil
 }
 
-// GetStats returns database statistics, counting only root
-// sessions with messages (matching the session list filter).
+// GetStats returns database statistics for all sessions with messages,
+// including subagents and forks so footer counts match sync totals.
 func (db *DB) GetStats(
 	ctx context.Context,
 	excludeOneShot, excludeAutomated bool,
 ) (Stats, error) {
-	filter := rootSessionFilter
+	filter := statsFilter
 	if excludeOneShot {
 		if !excludeAutomated {
 			filter += " AND (user_message_count > 1 OR is_automated = 1)"
