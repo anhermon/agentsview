@@ -376,6 +376,7 @@ local Amp thread JSON files.
 | Crush                 | `~/.local/share/crush/projects.json` registry pointing at per-project `~/<project>/.crush/crush.db` stores (macOS and Linux), `%LOCALAPPDATA%\\crush\\projects.json` (Windows)                                                                       |
 | gptme                 | `~/.local/share/gptme/logs/`                                                                                                                                                                                                                         |
 | Grok                  | `~/.grok/sessions/`                                                                                                                                                                                                                                  |
+| Grok Bot              | `~/sand-data/agent-transcripts/`, `~/agent-data/agent-transcripts/` (Cursor Sand / desktop agent)                                                                                                                                                   |
 | Hermes Agent          | `~/.hermes/sessions/` (macOS and Linux), `~/AppData/Local/hermes/sessions/` (Windows)                                                                                                                                                                |
 | iFlow                 | `~/.iflow/projects/`                                                                                                                                                                                                                                 |
 | Kilo                  | `~/.local/share/kilo/`                                                                                                                                                                                                                               |
@@ -423,6 +424,15 @@ for the full transcript (user turns, assistant replies, thinking, and tool
 calls). If `chat_history.jsonl` is missing, AgentsView falls back to
 summary-only mode. Set `GROK_DIR` or `agents.grok.dirs` to override the default
 directory.
+
+Grok Bot (Cursor Sand / desktop agent) sessions are read from JSONL transcripts
+at `~/sand-data/agent-transcripts/<id>/<id>.jsonl` or
+`~/agent-data/agent-transcripts/<id>/<id>.jsonl`. Each JSONL line contains a
+role (user/assistant/tool) and message content with text and tool use/result
+blocks. These transcripts do not include native token usage data; agentsview
+surfaces session search, message counts, and tool analytics without cost
+estimates. Set `GROKBOT_DIR` or `agents.grokbot.dirs` to override the default
+directories.
 
 Goose sessions are read from its shared SQLite `sessions.db`, including
 transcript content, thinking, tool calls and results, session relationships,
