@@ -57,6 +57,7 @@ const (
 	AgentHermes         AgentType = "hermes"
 	AgentAugureDesktop  AgentType = "augure-desktop"
 	AgentGrok           AgentType = "grok"
+	AgentGrokBot        AgentType = "grokbot"
 	AgentGoose          AgentType = "goose"
 	AgentWorkBuddy      AgentType = "workbuddy"
 	AgentCodeBuddy      AgentType = "codebuddy"
@@ -754,6 +755,18 @@ var Registry = []AgentDef{
 		DefaultDirs: []string{".grok/sessions"},
 		IDPrefix:    "grok:",
 		FileBased:   true,
+	},
+	{
+		Type:        AgentGrokBot,
+		DisplayName: "Grok Bot",
+		EnvVar:      "GROKBOT_DIR",
+		ConfigKey:   "grokbot_dirs",
+		DefaultDirs: []string{"sand-data/agent-transcripts", "agent-data/agent-transcripts"},
+		IDPrefix:    "grokbot:",
+		FileBased:   true,
+		Usage: UsageCapabilities{
+			NoPerMessageTokenData: true,
+		},
 	},
 	{
 		Type:              AgentGoose,

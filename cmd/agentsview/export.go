@@ -14,6 +14,7 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/export"
+	"go.kenn.io/agentsview/internal/service"
 )
 
 const sessionExportCursorResetExitCode = 4
@@ -69,6 +70,7 @@ type exportSessionsOutput struct {
 	Cursor        exportSessionsOutputCursor        `json:"cursor"`
 	Pricing       any                               `json:"pricing"`
 	Projects      map[string]export.ProjectMapEntry `json:"projects"`
+	MachineLabels service.MachineLabelCatalog       `json:"machine_labels"`
 	Sessions      []db.SessionSummaryRow            `json:"sessions"`
 }
 
@@ -80,6 +82,7 @@ type exportSessionsMetaOutput struct {
 	Cursor        exportSessionsOutputCursor        `json:"cursor"`
 	Pricing       any                               `json:"pricing"`
 	Projects      map[string]export.ProjectMapEntry `json:"projects"`
+	MachineLabels service.MachineLabelCatalog       `json:"machine_labels"`
 }
 
 type exportSessionsOutputCursor struct {
@@ -305,6 +308,17 @@ func runExportSessions(cmd *cobra.Command, cfg exportSessionsConfig) error {
 	}
 
 	output := buildExportSessionsOutput(pages)
+	keys := make(map[string]struct{}, len(output.Sessions))
+	for _, session := range output.Sessions {
+		keys[session.Machine] = struct{}{}
+	}
+	output.MachineLabels = machineLabelsForKeys(machineLabelCatalog(
+		ctx, cmd.ErrOrStderr(),
+		func(ctx context.Context) (service.MachineLabelCatalog, error) {
+			return database.GetMachineLabels(ctx)
+		},
+	), keys)
+
 	enc := jsontext.NewEncoder(cmd.OutOrStdout())
 	if cfg.Format == "ndjson" {
 		if err := json.MarshalEncode(enc, exportSessionsMetaOutput{
@@ -315,6 +329,7 @@ func runExportSessions(cmd *cobra.Command, cfg exportSessionsConfig) error {
 			Cursor:        output.Cursor,
 			Pricing:       output.Pricing,
 			Projects:      output.Projects,
+			MachineLabels: output.MachineLabels,
 		}); err != nil {
 			return err
 		}
@@ -456,6 +471,7 @@ func buildExportSessionsOutput(
 		Cursor:        exportSessionsOutputCursor{},
 		Pricing:       map[string]any{},
 		Projects:      map[string]export.ProjectMapEntry{},
+		MachineLabels: service.MachineLabelCatalog{},
 		Sessions:      []db.SessionSummaryRow{},
 	}
 	for _, page := range pages {

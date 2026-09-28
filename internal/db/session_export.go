@@ -70,7 +70,7 @@ type SessionSummaryRow struct {
 	LocalModifiedAt       *string                      `json:"local_modified_at"`
 	Project               string                       `json:"-"`
 	ProjectReference      export.ProjectReference      `json:"project"`
-	Machine               string                       `json:"-"`
+	Machine               string                       `json:"machine"`
 	Agent                 string                       `json:"agent"`
 	Cwd                   string                       `json:"-"`
 	GitBranch             string                       `json:"-"`
