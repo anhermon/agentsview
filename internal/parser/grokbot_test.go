@@ -147,6 +147,53 @@ func TestGrokBotProviderDiscovery(t *testing.T) {
 	assert.Contains(t, paths, jsonl2)
 }
 
+func TestParseGrokBotSessionAutomationMarkers(t *testing.T) {
+	fixtureDir := t.TempDir()
+	sessionID := "automated-session"
+	sessionDir := filepath.Join(fixtureDir, sessionID)
+	require.NoError(t, os.MkdirAll(sessionDir, 0755))
+
+	jsonlPath := filepath.Join(sessionDir, sessionID+".jsonl")
+	fixture := `{"role":"user","message":{"content":[{"type":"text","text":"[SAND_TRUSTED_AUTOMATION_PROMPT] Run automated tests"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Running tests now."}]}}
+`
+	require.NoError(t, os.WriteFile(jsonlPath, []byte(fixture), 0644))
+
+	result, err := ParseGrokBotSession(jsonlPath, "test-machine")
+	require.NoError(t, err)
+
+	assert.Equal(t, SessionKindNonInteractive, result.Session.SessionKind,
+		"should mark session as automated when automation prompt detected")
+	assert.NotContains(t, result.Session.FirstMessage, "[SAND_TRUSTED_AUTOMATION_PROMPT]",
+		"should strip automation marker from first message")
+	assert.Contains(t, result.Session.FirstMessage, "Run automated tests",
+		"should preserve actual prompt text")
+}
+
+func TestParseGrokBotSessionSubagentParent(t *testing.T) {
+	fixtureDir := t.TempDir()
+
+	parentID := "parent-session-abc"
+	parentDir := filepath.Join(fixtureDir, parentID)
+	require.NoError(t, os.MkdirAll(parentDir, 0755))
+	parentJSONL := filepath.Join(parentDir, parentID+".jsonl")
+	require.NoError(t, os.WriteFile(parentJSONL, []byte(`{"role":"user","message":{"content":[{"type":"text","text":"parent"}]}}`+"\n"), 0644))
+
+	subagentID := "sand-subagent-123-456-789"
+	subagentDir := filepath.Join(fixtureDir, subagentID)
+	require.NoError(t, os.MkdirAll(subagentDir, 0755))
+	subagentJSONL := filepath.Join(subagentDir, subagentID+".jsonl")
+	require.NoError(t, os.WriteFile(subagentJSONL, []byte(`{"role":"user","message":{"content":[{"type":"text","text":"subagent task"}]}}`+"\n"), 0644))
+
+	result, err := ParseGrokBotSession(subagentJSONL, "test-machine")
+	require.NoError(t, err)
+
+	assert.Equal(t, "grokbot:"+parentID, result.Session.ParentSessionID,
+		"should link sand-subagent to parent session")
+	assert.Equal(t, RelSubagent, result.Session.RelationshipType,
+		"should set relationship type to subagent")
+}
+
 func TestGrokBotClassifyPath(t *testing.T) {
 	root := "/home/user/sand-data/agent-transcripts"
 
