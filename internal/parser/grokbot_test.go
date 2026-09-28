@@ -71,6 +71,41 @@ func TestParseGrokBotSessionEmpty(t *testing.T) {
 	assert.Contains(t, err.Error(), "has no messages")
 }
 
+func TestParseGrokBotSessionLargeLines(t *testing.T) {
+	fixtureDir := t.TempDir()
+	sessionID := "large-line-session"
+	sessionDir := filepath.Join(fixtureDir, sessionID)
+	require.NoError(t, os.MkdirAll(sessionDir, 0755))
+
+	jsonlPath := filepath.Join(sessionDir, sessionID+".jsonl")
+
+	// Create a tool result with a large content block (~100KB)
+	largeContent := make([]byte, 100*1024)
+	for i := range largeContent {
+		largeContent[i] = byte('a' + (i % 26))
+	}
+
+	fixture := `{"role":"user","message":{"content":[{"type":"text","text":"Read this large file"}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","tool_use_id":"large_001","name":"read_file","input":{"path":"large.txt"}}]}}
+{"role":"tool","message":{"content":[{"type":"tool_result","tool_use_id":"large_001","tool_result":"` + string(largeContent) + `"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Done reading."}]}}
+`
+	require.NoError(t, os.WriteFile(jsonlPath, []byte(fixture), 0644))
+
+	result, err := ParseGrokBotSession(jsonlPath, "test-machine")
+	require.NoError(t, err, "should handle large lines without scanner buffer overflow")
+
+	assert.Equal(t, "grokbot:"+sessionID, result.Session.ID)
+	assert.Equal(t, 4, result.Session.MessageCount)
+
+	require.Len(t, result.Messages, 4)
+	assert.Equal(t, RoleUser, result.Messages[2].Role)
+	require.Len(t, result.Messages[2].ToolResults, 1)
+	assert.Equal(t, "large_001", result.Messages[2].ToolResults[0].ToolUseID)
+	assert.GreaterOrEqual(t, result.Messages[2].ToolResults[0].ContentLength, 100*1024,
+		"should successfully parse tool result with large content without scanner overflow")
+}
+
 func TestGrokBotProviderDiscovery(t *testing.T) {
 	fixtureDir := t.TempDir()
 
